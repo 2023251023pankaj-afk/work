@@ -1,0 +1,545 @@
+{% extends "base.html" %}
+{% block title %}{{ r.verdict }} — Audit Master{% endblock %}
+{% block sub %}{{ r.plan.source_filename[:34] }}{% endblock %}
+{% block actions %}
+  <button class="btn" data-copy title="Copy the summary">Copy summary</button>
+  <a class="btn" href="{{ url_for('index') }}">New check</a>
+{% endblock %}
+
+{% block body %}
+{% macro raw_rows(entries, limit=12) %}
+<div class="raw">
+  <table class="rawt">
+    <thead>
+      <tr>
+        <th>Row</th><th>Where it happened</th><th>Field</th>
+        <th>Old Setting</th><th>New Setting</th><th>User</th><th>Date</th><th>Description</th>
+        <th>Id</th><th>Operation</th><th>Activity</th><th>Level</th>
+        <th>Level Details</th><th>Effective From</th><th>Package generated or not</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in entries[:limit] %}
+      <tr>
+        <td class="mono">{{ e.row_no }}</td>
+        <td class="where">{{ clip(e.where, 60) }}</td>
+        <td class="mono">{{ e.raw.get('field', e.field_text) }}</td>
+        <td class="mono old" title="{{ clip(e.raw.get('old', e.old), 800) }}">{{ clip(e.raw.get('old', e.old)) or '(empty)' }}</td>
+        <td class="mono new" title="{{ clip(e.raw.get('new', e.new), 800) }}">{{ clip(e.raw.get('new', e.new)) or '(empty)' }}</td>
+        <td>{{ e.raw.get('user', e.user) }}</td>
+        <td>{{ e.raw.get('date', e.date_text) }}</td>
+        <td class="desc" title="{{ clip(e.raw.get('description', e.description), 800) }}">{{ clip(e.raw.get('description', e.description)) }}</td>
+        <td class="mono">{{ e.raw.get('id', e.audit_id) }}</td>
+        <td>{{ e.raw.get('operation', e.operation) }}</td>
+        <td>{{ e.raw.get('activity', e.activity) }}</td>
+        <td>{{ e.raw.get('level', e.level) }}</td>
+        <td>{{ e.raw.get('level_details', e.level_details) }}</td>
+        <td>{{ e.raw.get('effective_from', e.effective_from) }}</td>
+        <td>{{ e.raw.get('package', e.package) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if entries|length > limit %}
+  <p class="more">Showing {{ limit }} of {{ "{:,}".format(entries|length) }} rows — download “Audit rows (.csv)” under Files &amp; downloads for all of them.</p>
+  {% endif %}
+</div>
+{% endmacro %}
+{% set problems = r.failures + r.warnings %}
+{% set unex = r.evidence.unexplained(r.log) if r.evidence else [] %}
+
+{# ================= header: verdict + figures, beside what to do next ================= #}
+{% set unexplained = attribution_counts.get('unattributed', 0) %}
+{% if r.plan.targets %}
+  {% set tiles = 2 + (1 if r.total_missing else 0) + (1 if r.not_attempted else 0) + (1 if unexplained else 0) %}
+{% else %}
+  {% set tiles = 3 %}
+{% endif %}
+<div class="top">
+<div class="top-main">
+<div class="verdict {{ verdict_class(r.verdict) }}">
+  <div class="mark">{% if r.verdict == PASS %}✓{% elif r.verdict == FAIL %}!{% else %}~{% endif %}</div>
+  <div>
+    <h1>
+      {% if r.verdict == PASS %}Work matches the plan
+      {% elif r.verdict == FAIL %}Work does not match the plan
+      {% else %}Matches the plan, with notes{% endif %}
+    </h1>
+    <p id="headline">{{ headline }}</p>
+  </div>
+</div>
+
+{# ================= stats ================= #}
+{% if r.plan.targets %}
+<div class="stats" style="--cols: {{ tiles if tiles <= 4 else 3 }}">
+  <div class="stat ok">
+    <div class="n"><span data-n="{{ r.total_confirmed }}">{{ r.total_confirmed }}</span><span class="of"> of {{ r.total_expected }}</span></div>
+    <div class="k">{% if r.not_attempted %}Done, of what this log covers{% else %}Planned changes done{% endif %}</div>
+  </div>
+  {% if r.total_missing %}
+  <div class="stat bad"><div class="n" data-n="{{ r.total_missing }}">{{ r.total_missing }}</div><div class="k">Still not done</div></div>
+  {% endif %}
+  <div class="stat {{ 'bad' if r.total_unauthorized }}"><div class="n" data-n="{{ r.total_unauthorized }}">{{ r.total_unauthorized }}</div><div class="k">Changed but not asked for</div></div>
+  {% if r.not_attempted %}
+  <div class="stat"><div class="n" data-n="{{ r.not_attempted|length }}">{{ r.not_attempted|length }}</div><div class="k">Screen sets not in this log</div></div>
+  {% endif %}
+  {# A verdict can fail on rows that are neither missing nor an unplanned
+     button, so show that count rather than leaving five zeroes beside a FAIL. #}
+  {% if unexplained %}
+  <div class="stat bad"><div class="n" data-n="{{ unexplained }}">{{ unexplained }}</div><div class="k">Unexplained rows</div></div>
+  {% endif %}
+</div>
+{% elif r.evidence %}
+<div class="stats" style="--cols: 3">
+  <div class="stat ok"><div class="n" data-n="{{ r.evidence.matched|length }}">{{ r.evidence.matched|length }}</div><div class="k">Values confirmed</div></div>
+  <div class="stat {{ 'bad' if unex }}"><div class="n" data-n="{{ unex|length }}">{{ unex|length }}</div><div class="k">Unaccounted changes</div></div>
+  <div class="stat"><div class="n" data-n="{{ r.log.entries|length }}">{{ r.log.entries|length }}</div><div class="k">Audit rows</div></div>
+</div>
+{% endif %}
+</div>{# /top-main #}
+
+<div class="card nextsteps">
+  <h2>{% if r.verdict == PASS and not r.not_attempted %}Nothing to do{% else %}What to do next{% endif %}</h2>
+  <ol>
+    {% for step in next_steps %}<li>{{ step }}</li>{% endfor %}
+  </ol>
+</div>
+</div>{# /top #}
+
+{# ================= tabs ================= #}
+<div class="tabs" role="tablist" id="tabs">
+  <button role="tab" id="tab-overview" data-tab="overview" aria-controls="panel-overview" aria-selected="true">Overview</button>
+  {% if r.entities %}
+  <button role="tab" id="tab-detail" data-tab="detail" aria-controls="panel-detail" aria-selected="false">
+    Screen sets <span class="badge">{{ r.entities|length }}</span>
+  </button>
+  {% elif r.evidence and r.evidence.claims %}
+  <button role="tab" id="tab-detail" data-tab="detail" aria-controls="panel-detail" aria-selected="false">
+    Values <span class="badge">{{ r.evidence.matched|length }}</span>
+  </button>
+  {% endif %}
+  <button role="tab" id="tab-rows" data-tab="rows" aria-controls="panel-rows" aria-selected="false">
+    Every change <span class="badge">{{ r.log.entries|length }}</span>
+  </button>
+  {% if problems %}
+  <button role="tab" id="tab-issues" data-tab="issues" aria-controls="panel-issues" aria-selected="false">
+    Problems <span class="badge bad">{{ problems|length }}</span>
+  </button>
+  {% endif %}
+  <button role="tab" id="tab-sources" data-tab="sources" aria-controls="panel-sources" aria-selected="false">Files &amp; downloads</button>
+</div>
+
+{# ================= OVERVIEW ================= #}
+<section class="panel" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" data-panel="overview">
+ <div class="colgrid overview">
+  {% if attribution_counts.values()|sum %}
+  <div class="card">
+    <h2>Where every one of the {{ "{:,}".format(r.log.entries|length) }} audit rows went</h2>
+    <p class="sub">Each row is counted once, so nothing is quietly skipped.</p>
+    {% set total = r.log.entries|length %}
+    <div class="abar">
+      {% for key, n in attribution_counts.items() if n %}
+        <span class="{{ attr_class(key) }}" style="width:{{ (n / total * 100)|round(2) }}%"
+              title="{{ attr_label[key] }}: {{ n }}"></span>
+      {% endfor %}
+    </div>
+    <div class="buckets">
+      {% for key, n in attribution_counts.items() if n %}
+      <div class="bucket">
+        <span class="bl"><i class="{{ attr_class(key) }}"></i>{{ attr_label[key] }}</span>
+        <span class="bn">{{ "{:,}".format(n) }}</span>
+        <span class="bh">{{ attr_help[key] }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>The detail</h2>
+    <div id="narrative">
+      {% for para in narrative %}{% if not loop.first %}
+      <p style="margin:0 0 11px;color:{{ 'var(--ink)' if loop.first else 'var(--muted)' }};
+                font-size:13.5px;max-width:84ch">{{ para }}</p>{% endif %}
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if problems %}
+  <div class="card span">
+    <h2 style="color:var(--bad)">{{ problems|length }} thing{{ '' if problems|length == 1 else 's' }} to look at</h2>
+    <p class="sub">Full detail on the Issues tab.</p>
+    {% for f in problems[:3] %}
+    <div class="finding {{ status_class(f.status) }}">
+      <div class="bar"></div>
+      <div>
+        <div class="t">{{ f.title }}{% if f.subject %} — {{ f.subject }}{% endif %}</div>
+        <div class="m">{{ f.message }}</div>
+        {% if f.rows %}
+        <button class="linkbtn" data-goto="issues">View the {{ f.rows|length }} audit row{{ '' if f.rows|length == 1 else 's' }} →</button>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+    {% if problems|length > 3 %}
+    <p style="margin:12px 0 0"><button class="btn" data-goto="issues">See all {{ problems|length }}</button></p>
+    {% endif %}
+  </div>
+  {% endif %}
+ </div>
+</section>
+
+{# ================= DETAIL: screen sets ================= #}
+{% if r.entities %}
+<section class="panel" id="panel-detail" role="tabpanel" aria-labelledby="tab-detail" data-panel="detail" hidden>
+  {% for er in r.entities %}
+  <div class="card">
+    <h2 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="pill {{ verdict_class(er.verdict) }}">{{ er.verdict.replace('_',' ') }}</span>
+      {{ er.entity }}
+      {% if not er.in_plan %}<span class="pill bad">not in plan</span>{% endif %}
+    </h2>
+    <p class="sub">
+      {{ er.entry_count }} audit row{{ '' if er.entry_count == 1 else 's' }}
+      {%- if er.screen %} · {{ er.screen }}{% endif %}
+      {%- if er.languages %} · {{ er.languages|length }} languages{% endif %}
+      · click a row for its evidence
+    </p>
+
+    {% if er.buttons %}
+    <div class="tablewrap">
+      <table class="fit">
+        <thead>
+          <tr><th>Daypart</th><th class="num">Button</th><th class="grow">Audit log</th><th>Result</th><th class="num">Evidence</th></tr>
+        </thead>
+        <tbody>
+          {% for b in er.buttons %}
+          <tr class="expandable" aria-expanded="false" data-toggle="ev-{{ loop.index0 }}-{{ er.entity|replace(' ','') }}">
+            <td>{{ b.group }}</td>
+            <td class="num mono">{{ b.button }}</td>
+            <td class="mono grow">{{ b.toggle.change_text if b.toggle else '—' }}</td>
+            <td>
+              {% if b.status == CONFIRMED %}<span class="pill ok">✓ confirmed</span>
+              {% elif b.status == 'missing' %}<span class="pill bad">✕ missing</span>
+              {% else %}<span class="pill bad">✕ {{ b.status.replace('_',' ') }}</span>{% endif %}
+            </td>
+            <td class="num">{{ b.evidence_count }}</td>
+          </tr>
+          <tr class="detail" id="ev-{{ loop.index0 }}-{{ er.entity|replace(' ','') }}" hidden>
+            <td colspan="5">
+              <div class="inner">
+                {% if b.support_rows %}
+                <table class="fit">
+                  <thead><tr><th class="num">Row</th><th>Field</th><th>Language</th><th class="grow">Change</th></tr></thead>
+                  <tbody>
+                    {% for e in b.support_rows %}
+                    <tr>
+                      <td class="num mono">{{ e.row_no }}</td>
+                      <td>{{ e.prop }}</td>
+                      <td>{{ e.language or '—' }}</td>
+                      <td class="mono grow" title="{{ clip(e.old, 400) }} → {{ clip(e.new, 400) }}">{{ clip(e.old, 55) or '(empty)' }} → {{ clip(e.new, 55) or '(empty)' }}</td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+                {% else %}
+                <p style="margin:0;color:var(--faint);font-size:13px">
+                  No caption or image rows accompany this button.
+                </p>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if er.other_work %}
+    <h2 style="margin:22px 0 4px">Other work on this screen set</h2>
+    <p class="sub">
+      Changed in saves that did none of this plan's work — a separate task
+      sharing the same export. Listed so nothing is hidden, but not counted
+      against this plan.
+    </p>
+    <div class="tablewrap">
+      <table class="fit">
+        <thead><tr><th class="num">Button</th><th class="grow">Audit log</th><th class="num">Rows</th></tr></thead>
+        <tbody>
+          {% for b in er.other_work %}
+          <tr>
+            <td class="num mono">{{ b.button }}</td>
+            <td class="mono grow">{{ b.toggle.change_text if b.toggle else 'content changed' }}</td>
+            <td class="num">{{ b.evidence_count }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if er.unauthorized %}
+    <h2 style="color:var(--bad);margin:22px 0 4px">Not in the plan</h2>
+    <p class="sub">Changed on this screen set, but the plan never asked for it.</p>
+    <div class="tablewrap">
+      <table class="fit">
+        <thead><tr><th class="num">Button</th><th>Audit log</th><th class="grow">Fields touched</th><th class="num">Rows</th></tr></thead>
+        <tbody>
+          {% for b in er.unauthorized %}
+          <tr>
+            <td class="num mono">{{ b.button }}</td>
+            <td class="mono">{{ b.toggle.change_text if b.toggle else 'content changed' }}</td>
+            <td class="grow">{% for e in b.support_rows[:6] %}<span class="tag mono">{{ e.field_text }}</span>{% endfor %}
+                {% if not b.support_rows %}—{% endif %}</td>
+            <td class="num">{{ b.evidence_count }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+
+{# ================= DETAIL: evidence values ================= #}
+{% elif r.evidence and r.evidence.claims %}
+<section class="panel" id="panel-detail" role="tabpanel" aria-labelledby="tab-detail" data-panel="detail" hidden>
+  <div class="card">
+    <h2>Values this plan names</h2>
+    <p class="sub">
+      No screen-set / button grid was found, so the plan was checked by matching
+      the values it specifies against the audit log.
+    </p>
+    {% if r.evidence.matched %}
+    <div class="tablewrap">
+      <table class="fit">
+        <thead><tr><th>Kind</th><th class="grow">Value</th><th>In the audit log</th><th class="num">Rows</th></tr></thead>
+        <tbody>
+          {% for c in r.evidence.matched %}
+          <tr>
+            <td>{{ ev_kind[c.kind] }}</td>
+            <td class="mono grow" title="{{ clip(c.value, 800) }}">{{ c.value }}</td>
+            <td><span class="pill ok">✓ {{ ev_outcome[c.outcome] }}</span></td>
+            <td class="num">{{ c.entries|length }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p style="margin:0;color:var(--bad);font-size:14px">
+      None of the {{ r.evidence.claims|length }} values this plan names appear in this audit log.
+    </p>
+    {% endif %}
+  </div>
+
+  {% if unex %}
+  <div class="card">
+    <h2 style="color:var(--bad)">Changes the plan does not mention</h2>
+    <p class="sub">Each of these altered a value that appears nowhere in the plan.</p>
+    {{ raw_rows(unex) }}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{# ================= AUDIT ROWS ================= #}
+<section class="panel" id="panel-rows" role="tabpanel" aria-labelledby="tab-rows" data-panel="rows" hidden>
+  <div class="card">
+    <h2>{% if r.log.entries|length > row_cap %}Audit rows{% else %}Every audit row{% endif %}</h2>
+    <p class="sub">Search, filter by how each row was counted, or sort any column.</p>
+    {% if r.log.entries|length > row_cap %}
+    <p class="rawnote" style="color:var(--warn);background:var(--warn-bg);border-color:var(--warn-line)">
+      This log has {{ "{:,}".format(r.log.entries|length) }} rows. The first
+      {{ "{:,}".format(row_cap) }} are shown here so the page stays responsive —
+      searching and filtering apply to those. Every row is still counted in the
+      verdict and the breakdown above; download “Audit rows (.csv)” under
+      Files &amp; downloads for the complete list.
+    </p>
+    {% endif %}
+
+    <div class="toolbar">
+      <div class="search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>
+        </svg>
+        <input type="search" id="rowsearch" placeholder="Search where it happened, a field, a value…" autocomplete="off">
+        <button class="clear" data-clearsearch hidden title="Clear">×</button>
+      </div>
+      <span class="count" id="rowcount"></span>
+    </div>
+
+    <div class="chips" style="margin-bottom:14px" id="rowfilters">
+      <button class="chip" data-f="all" aria-pressed="true">All {{ r.log.entries|length }}</button>
+      {% for key, n in attribution_counts.items() if n %}
+        <button class="chip" data-f="{{ key }}" aria-pressed="false">{{ attr_label[key] }} {{ n }}</button>
+      {% endfor %}
+    </div>
+
+    <div class="tablewrap">
+      <table id="rowtable" class="fit fixed">
+        <colgroup>
+          <col style="width:58px"><col style="width:168px"><col style="width:20%">
+          <col style="width:17%"><col style="width:92px"><col style="width:108px"><col>
+        </colgroup>
+        <thead>
+          <tr>
+            <th class="num sortable" data-sort="num">Row</th>
+            <th class="sortable" data-sort="text">Counted as</th>
+            <th class="sortable" data-sort="text">Where it happened</th>
+            <th class="sortable" data-sort="text">Field</th>
+            <th class="num sortable" data-sort="num">Button</th>
+            <th class="sortable" data-sort="text">Language</th>
+            <th class="grow">Change</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in r.log.entries[:row_cap] %}
+          {% set attr = r.entry_attribution(e) %}
+          <tr data-attr="{{ attr }}">
+            <td class="num mono">{{ e.row_no }}</td>
+            <td><span class="pill {{ attr_class(attr) }}">{{ attr_label[attr] }}</span></td>
+            <td class="where" title="{{ clip(e.description, 400) }}">{{ clip(e.where, 70) }}</td>
+            <td class="mono" title="{{ clip(e.field_text, 300) }}">{{ clip(e.field_text, 120) }}</td>
+            <td class="num mono">{{ e.button or '' }}</td>
+            <td>{{ e.language or '—' }}</td>
+            <td class="mono grow" title="{{ clip(e.old, 400) }} → {{ clip(e.new, 400) }}">{{ clip(e.old, 55) or '(empty)' }} → {{ clip(e.new, 55) or '(empty)' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="empty" id="rowempty" hidden>No rows match that search.</p>
+    </div>
+  </div>
+</section>
+
+{# ================= ISSUES ================= #}
+{% if problems %}
+<section class="panel" id="panel-issues" role="tabpanel" aria-labelledby="tab-issues" data-panel="issues" hidden>
+  <div class="card">
+    <h2>{{ problems|length }} thing{{ '' if problems|length == 1 else 's' }} to look at</h2>
+    <p class="sub">Failures first, then warnings.</p>
+    {% for f in problems %}
+    <div class="finding {{ status_class(f.status) }}">
+      <div class="bar"></div>
+      <div>
+        <div class="t">
+          {{ f.title }}
+          {%- if f.entity %} <span style="color:var(--faint);font-weight:400">· {{ f.entity }}</span>{% endif %}
+          {%- if f.subject %} <span style="color:var(--faint);font-weight:400">· {{ f.subject }}</span>{% endif %}
+        </div>
+        <div class="m">{{ f.message }}</div>
+        {% if f.rows and loop.index <= detail_cap %}
+        <p class="rawhead">
+          Audit row{{ '' if f.rows|length == 1 else 's' }} where this was found
+          ({{ "{:,}".format(f.rows|length) }})
+        </p>
+        {{ raw_rows(r.entries_for(f.rows)) }}
+        {% elif f.rows %}
+        <div class="rows">
+          audit row{{ '' if f.rows|length == 1 else 's' }}
+          {{ f.rows[:20]|join(', ') }}{% if f.rows|length > 20 %} +{{ f.rows|length - 20 }} more{% endif %}
+          — full rows shown for the first {{ detail_cap }} issues only
+        </div>
+        {% elif f.check_id == 'C1' %}
+        <p class="rawnote">No audit row exists for this — the change never appears in the log.</p>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% set passed = r.all_findings | selectattr('status','in',['pass','info']) | list %}
+  {% if passed %}
+  <div class="card">
+    <h2>Checks that passed</h2>
+    <p class="sub">{{ passed|length }} check{{ '' if passed|length == 1 else 's' }} raised nothing.</p>
+    {% for f in passed %}
+    <div class="finding {{ status_class(f.status) }}">
+      <div class="bar"></div>
+      <div>
+        <div class="t" style="font-weight:500">{{ f.title }}</div>
+        <div class="m">{{ f.message }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{# ================= SOURCES ================= #}
+<section class="panel" id="panel-sources" role="tabpanel" aria-labelledby="tab-sources" data-panel="sources" hidden>
+  <div class="card">
+    <h2>What was compared</h2>
+    <dl class="kv" style="margin-top:14px">
+      <dt>Plan</dt>
+      <dd>{{ r.plan.source_filename }}
+        <span style="color:var(--faint)">({{ r.plan.source_format }}{% if r.plan.source_encoding %}, {{ r.plan.source_encoding }}{% endif %})</span>
+      </dd>
+      <dt>Read as</dt><dd>{{ r.plan.profile_label }}</dd>
+      {% if r.plan.targets %}
+      <dt>Plan contents</dt>
+      <dd>{{ r.plan.targets|length }} expected change{{ '' if r.plan.targets|length == 1 else 's' }}
+          across {{ r.plan.entities|length }} screen set{{ '' if r.plan.entities|length == 1 else 's' }}</dd>
+      {% endif %}
+      {% if r.plan.claims %}
+      <dt>Values harvested</dt><dd>{{ r.plan.claims|length }}</dd>
+      {% endif %}
+      {% if r.plan.meta.tile_label %}
+      <dt>Subject</dt><dd>“{{ r.plan.meta.tile_label }}” — to be {{ r.plan.meta.action }}d</dd>
+      {% endif %}
+      {% if r.plan.meta.screen_number %}
+      <dt>Target screen</dt><dd>{{ r.plan.meta.screen_number }} {{ r.plan.meta.screen_name }}</dd>
+      {% endif %}
+      {% if r.plan.sheet_roles %}
+      <dt>Sheets</dt>
+      <dd>{% for name, role in r.plan.sheet_roles.items() %}<span class="tag">{{ name }} → {{ role }}</span>{% endfor %}</dd>
+      {% endif %}
+
+      <dt style="padding-top:8px">Audit log</dt>
+      <dd style="padding-top:8px">{{ r.log.filename }}
+        <span style="color:var(--faint)">({{ r.log.fmt }}{% if r.log.encoding %}, {{ r.log.encoding }}{% endif %})</span>
+      </dd>
+      {% if r.log.report_effective_date %}<dt>Effective date</dt><dd>{{ r.log.report_effective_date }}</dd>{% endif %}
+      {% if r.log.generated_by %}<dt>Generated by</dt><dd>{{ r.log.generated_by }}</dd>{% endif %}
+      {% if r.log.users %}<dt>Changed by</dt><dd>{{ r.log.users|join(', ') }}</dd>{% endif %}
+      {% if r.log.audit_ids %}<dt>Transaction</dt><dd class="mono">{{ r.log.audit_ids|join(', ') }}</dd>{% endif %}
+      {% if r.not_attempted %}
+      <dt>Not covered</dt>
+      <dd>{{ r.not_attempted|length }} of the plan's {{ r.plan.entities|length }} screen sets have no rows here</dd>
+      {% endif %}
+    </dl>
+
+    {% if r.not_attempted %}
+    <details style="margin-top:14px">
+      <summary style="cursor:pointer;font-size:13px;color:var(--accent)">Show the {{ r.not_attempted|length }} uncovered screen sets</summary>
+      <div style="margin-top:10px">{% for e in r.not_attempted %}<span class="tag">{{ e }}</span>{% endfor %}</div>
+    </details>
+    {% endif %}
+  </div>
+
+  {% if r.document_findings %}
+  <div class="card">
+    <h2>Notes on the source files</h2>
+    <p class="sub">Authoring issues in the documents themselves. These do not affect the verdict.</p>
+    {% for f in r.document_findings %}
+    <div class="finding info"><div class="bar"></div><div><div class="m">{{ f.message }}</div></div></div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>Download</h2>
+    <p class="sub">The plan template is the plan as this app understood it — correct it and re-upload if a column was read wrongly.</p>
+    <div class="dl">
+      <a class="btn" href="{{ url_for('export', token=token, fmt='txt') }}">Report (.txt)</a>
+      <a class="btn" href="{{ url_for('export', token=token, fmt='csv') }}">Audit rows (.csv)</a>
+      <a class="btn" href="{{ url_for('export', token=token, fmt='json') }}">Full result (.json)</a>
+      <a class="btn" href="{{ url_for('plan_template', token=token) }}">Plan template (.json)</a>
+    </div>
+  </div>
+</section>
+{% endblock %}

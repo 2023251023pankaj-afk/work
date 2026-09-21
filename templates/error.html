@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} — Audit Master{% endblock %}
+{% block sub %}{% endblock %}
+{% block wrapclass %}narrow{% endblock %}
+{% block body %}
+  <div class="card" style="margin-top:22px;text-align:center">
+    <div style="font-size:34px;margin-bottom:8px">🔍</div>
+    <h2 style="font-size:17px">Error {{ code }}</h2>
+    <p style="color:var(--muted);font-size:14px;margin:6px 0 18px">{{ message }}</p>
+    <a class="btn primary" href="{{ url_for('index') }}">Start over</a>
+  </div>
+{% endblock %}

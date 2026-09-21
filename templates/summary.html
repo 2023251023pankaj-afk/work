@@ -1,0 +1,337 @@
+{% extends "base.html" %}
+{% block title %}Log summary — Audit Master{% endblock %}
+{% block sub %}{{ s.log.filename[:36] }}{% endblock %}
+{% block actions %}
+  <button class="btn" data-copy title="Copy the summary">Copy summary</button>
+  <a class="btn" href="{{ url_for('index') }}">New check</a>
+{% endblock %}
+
+{% block body %}
+
+{# ================= header: headline + figures, beside when/who ================= #}
+<div class="top">
+<div class="top-main">
+<div class="verdict info">
+  <div class="mark">≡</div>
+  <div>
+    <h1>Audit log summary</h1>
+    <p id="headline">{{ headline }}</p>
+  </div>
+</div>
+
+{# ================= figures ================= #}
+<div class="stats" style="--cols: 3">
+  <div class="stat"><div class="n" data-n="{{ s.total_rows }}">{{ "{:,}".format(s.total_rows) }}</div><div class="k">Change rows</div></div>
+  <div class="stat"><div class="n" data-n="{{ s.screen_sets|length }}">{{ s.screen_sets|length }}</div><div class="k">Screen sets</div></div>
+  <div class="stat"><div class="n" data-n="{{ s.distinct_buttons }}">{{ s.distinct_buttons }}</div><div class="k">Buttons touched</div></div>
+  <div class="stat"><div class="n" data-n="{{ s.button_toggles }}">{{ s.button_toggles }}</div><div class="k">Button state changes</div></div>
+  <div class="stat"><div class="n" data-n="{{ s.users|length }}">{{ s.users|length }}</div><div class="k">People</div></div>
+  <div class="stat"><div class="n" data-n="{{ s.transactions|length }}">{{ s.transactions|length }}</div><div class="k">Transactions</div></div>
+</div>
+</div>{# /top-main #}
+
+<div class="card glance">
+  <h2>At a glance</h2>
+  <dl class="kv">
+    {% if s.span %}<dt>When</dt><dd>{{ s.span_text }}{% if s.duration_text %} <span style="color:var(--faint)">· {{ s.duration_text }}</span>{% endif %}</dd>{% endif %}
+    {% if s.users %}
+    <dt>Who</dt>
+    <dd>{% for u, n in s.users.most_common(4) %}<span class="tag">{{ u }} — {{ "{:,}".format(n) }}</span>{% endfor %}
+        {% if s.users|length > 4 %}<span class="tag">+{{ s.users|length - 4 }} more</span>{% endif %}</dd>
+    {% endif %}
+    <dt>File</dt><dd>{{ s.log.filename }}</dd>
+  </dl>
+  {% if s.warnings %}
+  <h3 class="glance-h">Worth a look</h3>
+  <ul class="glance-list">
+    {% for o in s.warnings[:4] %}<li>{{ o.title }}</li>{% endfor %}
+  </ul>
+  <button class="linkbtn" data-goto="obs">See all {{ s.observations|length }} observations →</button>
+  {% endif %}
+</div>
+</div>{# /top #}
+
+{# ================= tabs ================= #}
+<div class="tabs" role="tablist" id="tabs">
+  <button role="tab" id="tab-overview" data-tab="overview" aria-controls="panel-overview" aria-selected="true">Overview</button>
+  <button role="tab" id="tab-sets" data-tab="sets" aria-controls="panel-sets" aria-selected="false">
+    Screen sets <span class="badge">{{ s.screen_sets|length }}</span>
+  </button>
+  <button role="tab" id="tab-rows" data-tab="rows" aria-controls="panel-rows" aria-selected="false">
+    Audit log <span class="badge">{{ "{:,}".format(s.total_rows) }}</span>
+  </button>
+  {% if s.observations %}
+  <button role="tab" id="tab-obs" data-tab="obs" aria-controls="panel-obs" aria-selected="false">
+    Observations <span class="badge {{ 'bad' if s.warnings }}">{{ s.observations|length }}</span>
+  </button>
+  {% endif %}
+  <button role="tab" id="tab-file" data-tab="file" aria-controls="panel-file" aria-selected="false">File</button>
+</div>
+
+{# ================= OVERVIEW ================= #}
+<section class="panel" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" data-panel="overview">
+ <div class="colgrid overview loose">
+  <div class="card">
+    <h2>What this log records</h2>
+    <div id="narrative">
+      {% for para in narrative %}
+      <p style="margin:0 0 11px;color:{{ 'var(--ink)' if loop.first else 'var(--muted)' }};
+                font-size:{{ '15px' if loop.first else '13.5px' }};max-width:84ch">{{ para }}</p>
+      {% endfor %}
+    </div>
+  </div>
+
+  {# --- distribution bars --- #}
+  {% macro bars(title, sub, counter, total, limit=8, labels=None) %}
+  {% if counter %}
+  <div class="card">
+    <h2>{{ title }}</h2>
+    <p class="sub">{{ sub }}</p>
+    <div class="barlist">
+      {% for name, n in counter.most_common(limit) %}
+      <div class="barrow">
+        {% set shown = labels[name] if labels and name in labels else name %}
+        <span class="lbl" title="{{ shown }}">{{ shown }}</span>
+        <span class="track"><span class="fill" style="width:{{ (n / total * 100)|round(1) }}%"></span></span>
+        <span class="val">{{ "{:,}".format(n) }}</span>
+        <span class="pct">{{ (n / total * 100)|round(1) }}%</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% if counter|length > limit %}
+    <p class="more" style="border:0;padding-left:0">+ {{ counter|length - limit }} more</p>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% endmacro %}
+
+  {{ bars("What was changed", "The kind of thing each change was made to, from the Description column.", s.targets, s.total_rows) }}
+  {{ bars("What kind of change", "Every row classified by what it did to the value.", s.changes, s.total_rows, labels=change_label) }}
+  {{ bars("Which fields changed", "The property each row altered.", s.properties, s.total_rows) }}
+  {{ bars("Languages and variants", "Rows carrying a language or variant qualifier in the field name.", s.languages, s.total_rows) }}
+  {{ bars("Operations", "The operation recorded against each row.", s.operations, s.total_rows) }}
+
+  {% if s.top_new %}
+  <div class="card">
+    <h2>Most common new values</h2>
+    <p class="sub">What settings were changed <em>to</em>, most frequent first.</p>
+    <div class="tablewrap">
+      <table class="fit">
+        <thead><tr><th class="grow">New setting</th><th class="num">Rows</th></tr></thead>
+        <tbody>
+          {% for v, n in s.top_new %}
+          <tr><td class="mono grow">{{ v }}</td><td class="num">{{ "{:,}".format(n) }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+ </div>
+</section>
+
+{# ================= SCREEN SETS ================= #}
+<section class="panel" id="panel-sets" role="tabpanel" aria-labelledby="tab-sets" data-panel="sets" hidden>
+  <div class="card">
+    <h2>Every screen set touched</h2>
+    <p class="sub">Sorted by how many rows each accounts for. Click one for its fields.</p>
+
+    <div class="toolbar">
+      <div class="search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>
+        </svg>
+        <input type="search" id="setsearch" placeholder="Search screen set, button, language…" autocomplete="off">
+      </div>
+      <span class="count" id="setcount"></span>
+    </div>
+
+    <div class="tablewrap">
+      <table class="fit" id="settable">
+        <thead>
+          <tr>
+            <th class="grow">Screen set</th>
+            <th class="num">Rows</th>
+            <th class="num">Buttons</th>
+            <th class="num">Disabled</th>
+            <th class="num">Languages</th>
+            <th class="grow">Screen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for b in s.screen_sets %}
+          <tr class="expandable" aria-expanded="false" data-toggle="set-{{ loop.index0 }}">
+            <td class="grow">{{ b.name }}</td>
+            <td class="num">{{ "{:,}".format(b.rows) }}</td>
+            <td class="num">{{ b.buttons|length }}</td>
+            <td class="num">{{ b.buttons_disabled or '' }}</td>
+            <td class="num">{{ b.languages|length }}</td>
+            <td class="grow">
+              {%- if b.screens -%}
+                {{ b.screens[:2]|join(', ') }}
+                {%- if b.screens|length > 2 %} <span style="color:var(--faint)">+{{ b.screens|length - 2 }} more</span>{% endif -%}
+              {%- else -%}—{%- endif -%}
+            </td>
+          </tr>
+          <tr class="detail" id="set-{{ loop.index0 }}" hidden>
+            <td colspan="6">
+              <div class="inner">
+                {% if b.buttons %}
+                <p style="margin:0 0 8px;font-size:12.5px"><strong>Buttons:</strong>
+                  {% for btn in b.buttons[:60] %}<span class="tag mono">{{ btn }}</span>{% endfor %}
+                  {% if b.buttons|length > 60 %}<span class="tag">+{{ b.buttons|length - 60 }} more</span>{% endif %}
+                </p>
+                {% endif %}
+                {% if b.languages %}
+                <p style="margin:0 0 8px;font-size:12.5px"><strong>Languages:</strong>
+                  {% for l in b.languages %}<span class="tag">{{ l }}</span>{% endfor %}
+                </p>
+                {% endif %}
+                {% if b.screens %}
+                <p style="margin:0 0 8px;font-size:12.5px"><strong>Screens:</strong>
+                  {% for sc in b.screens %}<span class="tag">{{ sc }}</span>{% endfor %}
+                </p>
+                {% endif %}
+                <p style="margin:0;font-size:12.5px"><strong>Fields:</strong>
+                  {% for p, n in b.properties.most_common(10) %}<span class="tag">{{ p }} — {{ n }}</span>{% endfor %}
+                </p>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="empty" id="setempty" hidden>No screen set matches that search.</p>
+    </div>
+  </div>
+</section>
+
+{# ================= ROWS ================= #}
+<section class="panel" id="panel-rows" role="tabpanel" aria-labelledby="tab-rows" data-panel="rows" hidden>
+  <div class="card">
+    <h2>{% if s.total_rows > row_cap %}Audit rows{% else %}Every audit row{% endif %}</h2>
+    <p class="sub">Search any value, or sort a column.</p>
+    {% if s.total_rows > row_cap %}
+    <p class="rawnote" style="color:var(--warn);background:var(--warn-bg);border-color:var(--warn-line)">
+      This log has {{ "{:,}".format(s.total_rows) }} rows. The first {{ "{:,}".format(row_cap) }}
+      are shown so the page stays responsive — every row is still counted in the
+      figures above. Download the summary for the full picture.
+    </p>
+    {% endif %}
+
+    <div class="toolbar">
+      <div class="search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>
+        </svg>
+        <input type="search" id="rowsearch" placeholder="Search where it happened, a field, a value…" autocomplete="off">
+        <button class="clear" data-clearsearch hidden title="Clear">×</button>
+      </div>
+      <span class="count" id="rowcount"></span>
+    </div>
+
+    <div class="tablewrap">
+      <table class="fit fixed" id="rowtable">
+        <colgroup>
+          <col style="width:58px"><col style="width:22%"><col style="width:20%">
+          <col style="width:92px"><col style="width:108px"><col>
+        </colgroup>
+        <thead>
+          <tr>
+            <th class="num sortable" data-sort="num">Row</th>
+            <th class="sortable" data-sort="text">Where it happened</th>
+            <th class="sortable" data-sort="text">Field</th>
+            <th class="num sortable" data-sort="num">Button</th>
+            <th class="sortable" data-sort="text">Language</th>
+            <th class="grow">Change</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in s.log.entries[:row_cap] %}
+          <tr data-attr="all">
+            <td class="num mono">{{ e.row_no }}</td>
+            <td class="where" title="{{ clip(e.description, 400) }}">{{ clip(e.where, 70) }}</td>
+            <td class="mono" title="{{ clip(e.field_text, 300) }}">{{ clip(e.field_text, 120) }}</td>
+            <td class="num mono">{{ e.button or '' }}</td>
+            <td>{{ e.language or '—' }}</td>
+            <td class="mono grow" title="{{ clip(e.old, 400) }} → {{ clip(e.new, 400) }}">{{ clip(e.old, 55) or '(empty)' }} → {{ clip(e.new, 55) or '(empty)' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="empty" id="rowempty" hidden>No rows match that search.</p>
+    </div>
+  </div>
+</section>
+
+{# ================= OBSERVATIONS ================= #}
+{% if s.observations %}
+<section class="panel" id="panel-obs" role="tabpanel" aria-labelledby="tab-obs" data-panel="obs" hidden>
+  <div class="card">
+    <h2>{{ s.observations|length }} observation{{ '' if s.observations|length == 1 else 's' }}</h2>
+    <p class="sub">
+      Not errors. An audit log on its own cannot be right or wrong — these are
+      simply things worth knowing before you trust it.
+    </p>
+    {% for o in s.observations %}
+    <div class="finding {{ 'warn' if o.level == 'warn' else 'info' }}">
+      <div class="bar"></div>
+      <div>
+        <div class="t">{{ o.title }}</div>
+        <div class="m">{{ o.message }}</div>
+        {% if o.rows %}
+        <div class="rows">
+          row{{ '' if o.rows|length == 1 else 's' }} {{ o.rows[:24]|join(', ') }}{% if o.rows|length > 24 %} …{% endif %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{# ================= FILE ================= #}
+<section class="panel" id="panel-file" role="tabpanel" aria-labelledby="tab-file" data-panel="file" hidden>
+  <div class="card">
+    <h2>About this file</h2>
+    <dl class="kv" style="margin-top:14px">
+      <dt>File</dt><dd>{{ s.log.filename }}</dd>
+      <dt>Format</dt><dd>{{ s.log.fmt }}{% if s.log.encoding %}, {{ s.log.encoding }}{% endif %}</dd>
+      <dt>Rows read</dt><dd>{{ "{:,}".format(s.total_rows) }}{% if s.log.skipped_rows %} ({{ s.log.skipped_rows }} skipped){% endif %}</dd>
+      {% if s.log.report_effective_date %}<dt>Effective date</dt><dd>{{ s.log.report_effective_date }}</dd>{% endif %}
+      {% if s.log.generated_on %}<dt>Generated</dt><dd>{{ s.log.generated_on }}</dd>{% endif %}
+      {% if s.log.generated_by %}<dt>Generated by</dt><dd>{{ s.log.generated_by }}</dd>{% endif %}
+      {% if s.effective_dates %}
+      <dt>Effective dates</dt>
+      <dd>{% for d, n in s.effective_dates.most_common(8) %}<span class="tag">{{ d }} — {{ n }}</span>{% endfor %}</dd>
+      {% endif %}
+      {% if s.transactions %}
+      <dt>Transactions</dt>
+      <dd>{% for tid, n in s.transactions[:10] %}<span class="tag mono">{{ tid }} — {{ n }}</span>{% endfor %}
+          {% if s.transactions|length > 10 %}<span class="tag">+{{ s.transactions|length - 10 }} more</span>{% endif %}</dd>
+      {% endif %}
+      {% if s.log.missing_columns %}
+      <dt>Missing columns</dt><dd>{{ s.log.missing_columns|join(', ') }}</dd>
+      {% endif %}
+    </dl>
+  </div>
+
+  <div class="card">
+    <h2>Download</h2>
+    <p class="sub">A plain-text version of everything on this page.</p>
+    <div class="dl">
+      <a class="btn" href="{{ url_for('summary_export', token=token) }}">Summary (.txt)</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Check it against a plan</h2>
+    <p class="sub">
+      This page describes the log. To judge whether the work was <em>correct</em>,
+      upload it again together with the deployment plan.
+    </p>
+    <a class="btn primary" href="{{ url_for('index') }}">Validate against a plan</a>
+  </div>
+</section>
+{% endblock %}

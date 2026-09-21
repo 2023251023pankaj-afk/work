@@ -1,0 +1,4 @@
+# Audit Master — the only third-party dependency is the web framework.
+# Spreadsheet, CSV, JSON, HTML and encoding handling are all standard library,
+# so there is nothing to install for pandas/openpyxl and no API key anywhere.
+Flask>=3.0

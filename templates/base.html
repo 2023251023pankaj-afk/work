@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>{% block title %}Audit Master{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="inner">
+      <a class="brand" href="{{ url_for('index') }}">Audit Master<span class="dot">.</span></a>
+      <span class="sub">{% block sub %}validate deployment work against audit logs{% endblock %}</span>
+      <div class="right">{% block actions %}{% endblock %}</div>
+    </div>
+  </header>
+
+  <main class="wrap {% block wrapclass %}{% endblock %}">
+    {% block body %}{% endblock %}
+    <p class="foot">Runs entirely on this machine — no API key, no external service.</p>
+  </main>
+
+  <div class="toast" id="toast"></div>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

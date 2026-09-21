@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block body %}
+  {% if error %}<div class="err" role="alert" style="margin-top:24px">{{ error }}</div>{% endif %}
+
+  <div class="hero">
+
+    <section class="intro">
+      <p class="eyebrow">Deployment validation</p>
+      <h1>Check a deployment</h1>
+      <p class="lead">
+        Did the work actually match the plan? Add the audit log and the
+        deployment plan and find out — nothing leaves this machine.
+      </p>
+
+      <ol class="steps">
+        <li><b>1</b><div><strong>Export the audit log</strong><span>For the work you want to check.</span></div></li>
+        <li><b>2</b><div><strong>Add the deployment plan</strong><span>The one that was followed.</span></div></li>
+        <li><b>3</b><div><strong>Read the verdict</strong><span>And what to do about it.</span></div></li>
+      </ol>
+
+      <div class="gets">
+        <h2>What you get</h2>
+        <ul>
+          <li>A clear verdict: did the work match the plan?</li>
+          <li>What to do next, in plain English</li>
+          <li>Every change, with <em>where it happened</em></li>
+        </ul>
+        <p class="alt">
+          Only have the audit log? Leave the plan out and you get a summary of
+          everything the log contains.
+        </p>
+      </div>
+    </section>
+
+    <section class="card uploader">
+      <h2>Add your files</h2>
+      <p class="sub">Drag them onto the boxes, or click a box to browse.</p>
+
+      <form method="post" action="{{ url_for('do_validate') }}" enctype="multipart/form-data" id="form">
+
+        <div class="colgrid drops">
+          <div>
+            <p class="fieldlabel">Audit log <span class="req">required</span></p>
+            <label class="drop" data-drop for="audit">
+              <input type="file" id="audit" name="audit" required data-input aria-describedby="audit-hint">
+              <div data-empty>
+                <div class="icon">🧾</div>
+                <div class="lbl">Drop the audit export here</div>
+                <div class="hint" id="audit-hint">The export that records what actually changed</div>
+                <span class="choose">Choose file</span>
+              </div>
+              <div class="file" data-file hidden>
+                <span class="fi" data-ext></span>
+                <span>
+                  <span class="fn" data-name></span><br>
+                  <span class="fs" data-size></span>
+                </span>
+                <button type="button" class="x" data-clear title="Remove">×</button>
+              </div>
+            </label>
+          </div>
+
+          <div>
+            <p class="fieldlabel">Deployment plan <span class="opt">optional</span></p>
+            <label class="drop" data-drop for="plan">
+              <input type="file" id="plan" name="plan" data-input aria-describedby="plan-hint">
+              <div data-empty>
+                <div class="icon">📋</div>
+                <div class="lbl">Drop the deployment plan here</div>
+                <div class="hint" id="plan-hint">The spreadsheet saying what should have changed. Skip it to just summarise the log.</div>
+                <span class="choose">Choose file</span>
+              </div>
+              <div class="file" data-file hidden>
+                <span class="fi" data-ext></span>
+                <span>
+                  <span class="fn" data-name></span><br>
+                  <span class="fs" data-size></span>
+                </span>
+                <button type="button" class="x" data-clear title="Remove">×</button>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <details id="strictness" class="strict">
+          <summary>Stricter checks (optional)</summary>
+          <div class="strictgrid">
+            <p class="sub" style="grid-column:1/-1;margin:0">Only applies when a plan is added.</p>
+            <label><input type="checkbox" name="require_full_plan_coverage"><span>Audit log must cover every screen set in the plan</span></label>
+            <label><input type="checkbox" name="require_supporting_evidence"><span>Every disabled button must also have its tile content cleared</span></label>
+            <label><input type="checkbox" name="require_language_parity"><span>Every button must cover the same languages</span></label>
+            <label><input type="checkbox" name="strict_screen_match"><span>Screen name must match the plan exactly</span></label>
+          </div>
+        </details>
+
+        <div class="submitrow">
+          <button class="btn primary lg" type="submit" id="go" disabled>
+            <span data-golabel>Summarise log</span>
+          </button>
+          <span class="count" id="hint" role="status" aria-live="polite">Choose an audit log to continue</span>
+        </div>
+      </form>
+    </section>
+
+  </div>
+{% endblock %}
