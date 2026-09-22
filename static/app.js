@@ -314,6 +314,40 @@
     applySets();
   }
 
+  /* ---------------- theme toggle ---------------- */
+  var themeBtn = $("#themetoggle");
+  if (themeBtn) {
+    var root = document.documentElement;
+
+    function label() {
+      var dark = root.getAttribute("data-theme") === "dark";
+      var next = dark ? "light" : "dark";
+      themeBtn.setAttribute("aria-label", "Switch to " + next + " theme");
+      themeBtn.setAttribute("title", "Switch to " + next + " theme");
+    }
+
+    themeBtn.addEventListener("click", function () {
+      var dark = root.getAttribute("data-theme") === "dark";
+      root.setAttribute("data-theme", dark ? "light" : "dark");
+      try { localStorage.setItem("audit-theme", dark ? "light" : "dark"); } catch (e) {}
+      label();
+    });
+
+    // Follow the OS while the user has not made an explicit choice.
+    try {
+      var mq = window.matchMedia("(prefers-color-scheme: dark)");
+      var onChange = function (e) {
+        if (localStorage.getItem("audit-theme")) return;
+        root.setAttribute("data-theme", e.matches ? "dark" : "light");
+        label();
+      };
+      if (mq.addEventListener) mq.addEventListener("change", onChange);
+      else if (mq.addListener) mq.addListener(onChange);
+    } catch (e) {}
+
+    label();
+  }
+
   /* ---------------- copy summary ---------------- */
   var copyBtn = $("[data-copy]");
   if (copyBtn) {

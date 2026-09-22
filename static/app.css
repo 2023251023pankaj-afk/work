@@ -6,7 +6,7 @@
   --panel-2: #fafbfc;
   --ink: #0f1720;
   --muted: #5b6775;
-  --faint: #97a1ad;
+  --faint: #626e7c;
   --line: #e3e8ee;
   --line-2: #eef2f6;
   --accent: #2563eb;
@@ -31,6 +31,14 @@
   --shadow-l: 0 12px 32px rgba(15, 23, 32, .10);
 
   --r: 12px;
+  --topbar: rgba(255, 255, 255, .86);
+  --line-strong: #cbd5e1;
+  --disabled: #c7d2e4;
+  --hover-tint: rgba(0, 0, 0, .06);
+  --accent-line: #bfd4fb;
+  --support-ink: #1d4ed8; --support-bg: #eff6ff; --support-line: #bfdbfe;
+  --other-ink: #6d28d9;  --other-bg: #f5f3ff;  --other-line: #ddd6fe;
+
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
@@ -63,7 +71,7 @@ a { color: var(--accent); }
 /* ---------------- top bar ---------------- */
 .topbar {
   position: sticky; top: 0; z-index: 40;
-  background: rgba(255, 255, 255, .86);
+  background: var(--topbar);
   backdrop-filter: saturate(180%) blur(12px);
   border-bottom: 1px solid var(--line);
 }
@@ -85,11 +93,11 @@ a { color: var(--accent); }
   transition: border-color .15s, background .15s, transform .08s, box-shadow .15s;
   text-decoration: none; white-space: nowrap;
 }
-.btn:hover { border-color: #cbd5e1; background: var(--panel-2); box-shadow: var(--shadow-s); }
+.btn:hover { border-color: var(--line-strong); background: var(--panel-2); box-shadow: var(--shadow-s); }
 .btn:active { transform: translateY(1px); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 .btn.primary:hover { background: var(--accent-ink); border-color: var(--accent-ink); }
-.btn.primary:disabled { background: #c7d2e4; border-color: #c7d2e4; cursor: not-allowed; transform: none; }
+.btn.primary:disabled { background: var(--disabled); border-color: var(--disabled); cursor: not-allowed; transform: none; }
 .btn.lg { padding: 11px 22px; font-size: 14.5px; border-radius: 9px; }
 
 /* ---------------- cards ---------------- */
@@ -279,7 +287,7 @@ tr.detail th { background: var(--panel-2); }
   border-radius: 8px; background: var(--panel); color: var(--accent);
   font-size: 13px; font-weight: 600; box-shadow: var(--shadow-s);
 }
-.drop:hover .choose { border-color: var(--accent); background: #fff; }
+.drop:hover .choose { border-color: var(--accent); background: var(--panel); }
 .drop .file { display: flex; align-items: center; gap: 11px; }
 .drop .file .fi { width: 32px; height: 32px; border-radius: 7px; background: var(--ok); color: #fff;
                   display: grid; place-items: center; font-size: 12px; font-weight: 700; flex: 0 0 32px; }
@@ -287,7 +295,7 @@ tr.detail th { background: var(--panel-2); }
 .drop .file .fs { color: var(--muted); font-size: 12px; }
 .drop .file .x { margin-left: auto; border: 0; background: none; color: var(--muted);
                  cursor: pointer; font-size: 17px; padding: 4px 7px; border-radius: 6px; z-index: 2; position: relative; }
-.drop .file .x:hover { background: rgba(0,0,0,.06); color: var(--bad); }
+.drop .file .x:hover { background: var(--hover-tint); color: var(--bad); }
 
 .fieldlabel { font-size: 13.5px; font-weight: 600; margin: 0 0 8px; display: flex; gap: 8px; align-items: center; }
 
@@ -382,7 +390,7 @@ table.rawt tbody tr:hover { background: var(--accent-bg); }
 /* ---------------- required / optional field badges ---------------- */
 .req, .opt { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
              padding: 2px 7px; border-radius: 99px; border: 1px solid; }
-.req { color: var(--accent); background: var(--accent-bg); border-color: #bfd4fb; }
+.req { color: var(--accent); background: var(--accent-bg); border-color: var(--accent-line); }
 .opt { color: var(--faint); background: var(--panel-2); border-color: var(--line); }
 
 @media (max-width: 560px) {
@@ -395,8 +403,8 @@ table.rawt tbody tr:hover { background: var(--accent-bg); }
    "a different task" were both light blue and unreadable side by side. */
 .abar span.support, .bl i.support { background: #60a5fa; }
 .abar span.other,   .bl i.other   { background: #c4b5fd; }
-.pill.support { color: #1d4ed8; background: #eff6ff; border-color: #bfdbfe; }
-.pill.other   { color: #6d28d9; background: #f5f3ff; border-color: #ddd6fe; }
+.pill.support { color: var(--support-ink); background: var(--support-bg); border-color: var(--support-line); }
+.pill.other   { color: var(--other-ink); background: var(--other-bg); border-color: var(--other-line); }
 
 /* ---------------- next steps ---------------- */
 .nextsteps ol { margin: 6px 0 0; padding-left: 20px; }
@@ -544,3 +552,55 @@ table.fixed td { width: auto; white-space: normal; overflow-wrap: anywhere; }
 /* Headers carry a sort arrow; wrapping them splits label from arrow. */
 table.fixed th { width: auto; white-space: nowrap; }
 table.fixed td.mono, table.fixed th.mono { overflow-wrap: anywhere; }
+
+/* ================= dark theme =============================================
+   Only the tokens change; every rule above is written against them. The
+   attribute is set by an inline script in <head> so the correct theme paints
+   on the first frame — applying it from app.js would flash white first. */
+:root[data-theme="dark"] {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel-2: #1b2029;
+  --ink: #e6edf3;
+  --muted: #9aa8b6;
+  --faint: #8593a2;
+  --line: #2a333d;
+  --line-2: #212932;
+  --line-strong: #3b4753;
+  --disabled: #2c3540;
+
+  --accent: #58a6ff;
+  --accent-ink: #79b8ff;
+  --accent-bg: #11243c;
+  --accent-line: #1f4068;
+
+  --ok: #56d364;      --ok-bg: #0e2a18;   --ok-line: #1d5330;
+  --bad: #ff8b98;     --bad-bg: #2d1519;  --bad-line: #5e232c;
+  --warn: #e3b341;    --warn-bg: #2a2109; --warn-line: #58441a;
+  --info: #58a6ff;    --info-bg: #11243c; --info-line: #1f4068;
+
+  --support-ink: #a5cdff; --support-bg: #13253a; --support-line: #244268;
+  --other-ink: #c4b5fd;   --other-bg: #201a38;   --other-line: #3b2f66;
+
+  --topbar: rgba(13, 17, 23, .86);
+  --hover-tint: rgba(255, 255, 255, .08);
+
+  --shadow-s: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-m: 0 4px 14px rgba(0, 0, 0, .45);
+  --shadow-l: 0 12px 32px rgba(0, 0, 0, .55);
+}
+
+/* The verdict mark and primary button sit on a saturated fill in both themes,
+   so their text stays near-white rather than following --ink. */
+:root[data-theme="dark"] .verdict .mark { color: #0d1117; }
+:root[data-theme="dark"] .btn.primary { color: #0d1117; }
+:root[data-theme="dark"] .steps b,
+:root[data-theme="dark"] .drop .file .fi { color: #0d1117; }
+:root[data-theme="dark"] .toast { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); }
+
+/* ---------------- theme toggle ---------------- */
+.themebtn { padding: 7px 10px; line-height: 0; }
+.themebtn svg { width: 17px; height: 17px; display: block; }
+.themebtn .moon { display: none; }
+:root[data-theme="dark"] .themebtn .sun { display: none; }
+:root[data-theme="dark"] .themebtn .moon { display: block; }
