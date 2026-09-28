@@ -31,6 +31,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_file,
     url_for,
 )
 
@@ -159,6 +160,7 @@ def _helpers() -> dict:
         "attr_class": lambda s: _ATTR_CLASS.get(s, "info"),
         "verdict_class": lambda v: _VERDICT_CLASS.get(v, "info"),
         "clip": clip,
+        "past_tense": report.past_tense,
         "attr_label": ATTR_LABEL,
         "attr_help": ATTR_HELP,
         "ev_kind": EV_KIND_LABEL,
@@ -326,6 +328,19 @@ def export(token: str, fmt: str):
         mimetype=f"{mime}; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{name}"'},
     )
+
+
+#: The Excel plan template the team fills in, served so everyone always has
+#: the current copy.
+PLAN_TEMPLATE_XLSX = "DEPLOYMENT-PLAN-TEMPLATE.xlsx"
+
+
+@app.get("/plan-template.xlsx")
+def blank_template():
+    path = BASE_DIR / PLAN_TEMPLATE_XLSX
+    if not path.exists():
+        abort(404)
+    return send_file(path, as_attachment=True, download_name=PLAN_TEMPLATE_XLSX)
 
 
 @app.get("/result/<token>/plan-template.json")

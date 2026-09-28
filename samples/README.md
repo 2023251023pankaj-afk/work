@@ -25,14 +25,13 @@ Seven exports, from 9 rows to 13,758. Worth knowing:
 
 - `Audit_Log_Report_06_17_26_05_30_54.csv` — the small clean one. Best for a
   first look.
-- `Audit_Log_Report_06_17_26_05_30_54 (edited, 3 extra test rows).csv` — the same
-  file with three deliberately broken rows appended (a made-up field name, a
-  repeat, and a change by a different user). Upload it with the McCafe plan to
-  see the app **fail** a log rather than pass it.
 - `Audit_Log_Report_08_24_26_08_23_25.csv` — 13,758 rows, 47 screen sets. The
   stress case.
 
 ## deployment-plans/
+
+The plans the team wrote before the template. `DEPLOYMENT-PLAN-TEMPLATE.xlsx` was
+built from them, and its Examples tab uses real changes from the logs above.
 
 Twelve plans in deliberately different shapes. Five are screen-set/button plans
 the app validates fully. The rest are other kinds of work — localisation,

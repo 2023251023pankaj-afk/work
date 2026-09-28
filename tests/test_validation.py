@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import sys
 import unittest
 import zipfile
 from pathlib import Path
@@ -1210,3 +1211,304 @@ class TestEveryRealLogRowHasALocation(unittest.TestCase):
                     blank[:5], [],
                     f"{len(blank)} of {len(log.entries)} rows have no location",
                 )
+
+
+LOGS_DIR = ROOT / "samples" / "audit-logs"
+
+
+def sample_log(name: str):
+    path = LOGS_DIR / name
+    if not path.exists():
+        raise unittest.SkipTest(f"sample log {name} not present")
+    return parse_audit_log(path.read_bytes(), name)
+
+
+def template_plan(changes=(), targets=(), do_not_touch=(), details=None):
+    """A plan written on the deployment-plan template, read back by the app."""
+    import tempfile
+    sys.path.insert(0, str(ROOT))
+    from auditmaster.plan_schema import Plan
+    from tools.make_plan_template import template_sheets
+    from tools.xlsx_writer import write_xlsx
+
+    plan = Plan(plan_name="filled")
+    plan.changes, plan.targets = list(changes), list(targets)
+    plan.do_not_touch = list(do_not_touch)
+    plan.meta.details = dict(details or {})
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "plan.xlsx"
+        write_xlsx(path, template_sheets(plan))
+        return parse_plan(path.read_bytes(), "plan.xlsx")
+
+
+def change(tab, **kw):
+    from auditmaster.plan_schema import Change
+    return Change(tab=tab, **kw)
+
+
+class TestDeploymentPlanTemplate(unittest.TestCase):
+    """The one workbook the team fills in, with a tab per portfolio.
+
+    Every row the team writes must reach the validator exactly as written, and
+    be judged on its own: done, done with a different value, not done, or not
+    in this log.
+    """
+
+    def test_the_blank_template_is_refused(self):
+        blank = ROOT / "DEPLOYMENT-PLAN-TEMPLATE.xlsx"
+        if not blank.exists():
+            self.skipTest("template not generated")
+        with self.assertRaises(PlanParseError) as ctx:
+            parse_plan(blank.read_bytes(), blank.name)
+        self.assertIn("no changes filled in", str(ctx.exception))
+
+    def test_the_examples_tab_is_never_read(self):
+        plan = template_plan([change("Menu item plan", kind="Menu item", menu_item="1",
+                                     what="Display Order", becomes="120")])
+        self.assertEqual(len(plan.changes), 1)
+        self.assertEqual(plan.targets, [])
+
+    def test_deployment_details_are_read(self):
+        plan = template_plan(
+            [change("Menu item plan", kind="Menu item", menu_item="1", what="Display Order", becomes="1")],
+            details={"Deployment name": "Display order refresh", "Environment": "Prod",
+                     "Action": "Update", "Screen number": "Screen 61000",
+                     "Tile or item being changed": "NEW McCafé Specialty Drinks"},
+        )
+        self.assertEqual(plan.plan_name, "Display order refresh")
+        self.assertEqual(plan.meta.environment, "Prod")
+        self.assertEqual(plan.meta.action, "update")
+        self.assertEqual(plan.meta.screen_number, "61000")
+        self.assertEqual(plan.meta.tile_label, "NEW McCafé Specialty Drinks")
+        # Required details left empty are reported, once.
+        notes = [w for w in plan.warnings if w.startswith("Deployment details")]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("Plan written by", notes[0])
+
+    def test_kiosk_button_rows_use_the_button_checker(self):
+        from auditmaster.plan_schema import Target
+        targets = [Target("Fairway - Portfolio A", g, b, "Disable", "Enable")
+                   for g, b in (("Breakfast", "12"), ("Dinner", "30"), ("Lunch", "53"), ("Latenight", "76"))]
+        plan = template_plan(targets=targets)
+        self.assertEqual(len(plan.targets), 4)
+        self.assertEqual(plan.changes, [])
+        res = validate(plan, parse_audit_log(AUDIT_CSV.read_bytes(), "a.csv"), Options())
+        self.assertEqual(res.verdict, PASS)
+        self.assertEqual(res.total_confirmed, 4)
+
+    def test_a_caption_row_is_checked_value_by_value(self):
+        log = parse_audit_log(AUDIT_CSV.read_bytes(), "a.csv")
+        right = template_plan([change("Kiosk plan", kind="Kiosk", where="Fairway - Portfolio A",
+                                      button="12", what="Caption", becomes="new btn")])
+        res = validate(right, log, Options())
+        self.assertEqual(res.changes[0].status, "confirmed")
+        # The image rows on the same button, same save, count with it.
+        self.assertTrue(res.changes[0].supporting)
+
+        wrong = template_plan([change("Kiosk plan", kind="Kiosk", where="Fairway - Portfolio A",
+                                      button="12", what="Caption", becomes="(blank)")])
+        res = validate(wrong, log, Options())
+        self.assertEqual(res.changes[0].status, "wrong_value")
+        self.assertEqual(res.changes[0].got, "new btn")
+        self.assertEqual(res.verdict, FAIL)
+        self.assertIn("different value", headline(res))
+
+    def test_a_change_on_the_wrong_screen_is_not_done(self):
+        log = parse_audit_log(AUDIT_CSV.read_bytes(), "a.csv")
+        plan = template_plan([change("Kiosk plan", kind="Kiosk", where="Fairway - Portfolio A",
+                                     screen="Breakfast Menu", button="12", what="Caption",
+                                     becomes="new btn")])
+        res = validate(plan, log, Options())
+        self.assertEqual(res.changes[0].status, "missing")
+        self.assertIn("instead of Breakfast Menu", res.changes[0].note)
+
+    def test_do_not_touch_is_enforced(self):
+        log = parse_audit_log(AUDIT_CSV.read_bytes(), "a.csv")
+        plan = template_plan([change("Kiosk plan", kind="Kiosk", where="Fairway - Portfolio A",
+                                     button="12", what="Caption", becomes="new btn")],
+                             do_not_touch=["Fairway - Portfolio A"])
+        res = validate(plan, log, Options())
+        self.assertEqual(plan.do_not_touch, ["Fairway - Portfolio A"])
+        self.assertTrue(any(f.check_id == "T7" and f.is_failure for f in res.failures))
+
+    def test_menu_item_rows(self):
+        log = sample_log("Audit_Log_Report_09_07_26_10_44_32 (1).csv")
+        plan = template_plan([
+            change("Menu item plan", kind="Menu item", menu_item="1", what="Display Order",
+                   was="751", becomes="120"),
+            change("Menu item plan", kind="Menu item", menu_item="3023", what="Display Order", becomes="7"),
+            change("Menu item plan", kind="Menu item", menu_item="99999", what="Display Order", becomes="5"),
+        ])
+        res = validate(plan, log, Options())
+        by_item = {c.change.menu_item: c for c in res.changes}
+        # Item 1 is matched on its own number only, never on another item whose
+        # display order happens to be 1.
+        self.assertEqual(by_item["1"].status, "confirmed")
+        self.assertEqual(len(by_item["1"].rows), 1)
+        self.assertEqual((by_item["3023"].status, by_item["3023"].got), ("wrong_value", "6"))
+        self.assertEqual(by_item["99999"].status, "not_in_log")
+
+    def test_menu_item_set_rows(self):
+        log = sample_log("Prod Audit_Log_Report_08_17_26_06_03_58.csv")
+        plan = template_plan([change(
+            "Menu item plan", kind="Menu item", menu_item="6975", where="57 - GUAM",
+            what="Default Value(KioskBitMapName)",
+            becomes="MO_202607_6975_HamburgerHappyMeal_TreetopApplesauce_ChocolateMilkCarton_Guam_Left_GodSan.jpg")])
+        self.assertEqual(validate(plan, log, Options()).changes[0].status, "confirmed")
+
+    def test_pos_item_removal(self):
+        log = sample_log("Audit_Log_Report_08_24_26_08_23_25.csv")
+        plan = template_plan([change("POS plan", kind="POS", where="02 - TSMOA", screen="Collectors Meal",
+                                     button="44", menu_item="25882", what="Menu item number",
+                                     was="25882", becomes="(blank)")])
+        res = validate(plan, log, Options())
+        self.assertEqual(res.changes[0].status, "confirmed")
+        self.assertTrue(res.changes[0].supporting)
+
+    def test_store_price_and_mcvalue_rows(self):
+        log = sample_log("Audit_Log_Report_09_04_26_11_17_28 1.csv")
+        plan = template_plan([
+            change("Restaurant plan", kind="Restaurant", store="44126", menu_item="50",
+                   what="Status", was="Inactive", becomes="Active"),
+            change("McValue plan", kind="Price", where="44126 Price List 090426", store="44126",
+                   what="Status", becomes="Active", effective="04-Sep-2026"),
+            change("McValue plan", kind="Price", store="918", what="Price Set Name",
+                   becomes="918 Price List 090426", effective="05-Sep-2026"),
+        ])
+        res = validate(plan, log, Options())
+        self.assertEqual([c.status for c in res.changes], ["confirmed"] * 3)
+        late = [c.change.store for c in res.changes if c.date_differs]
+        self.assertEqual(late, ["918"])
+        self.assertTrue(any(f.check_id == "T6" for f in res.warnings))
+
+    def test_restaurant_profile_and_user_rows(self):
+        prof = sample_log("Audit_Log_Report_08_24_26_08_23_25.csv")
+        plan = template_plan([
+            change("Restaurant plan", kind="Restaurant", store="11523", what="Time Zone",
+                   becomes="(GMT-05:00) Eastern Time (US & Canada)"),
+            change("Restaurant plan", kind="Restaurant", store="11523", what="Phone Number",
+                   was="919-234-0886", becomes="9194432145"),
+        ])
+        self.assertEqual([c.status for c in validate(plan, prof, Options()).changes], ["confirmed"] * 2)
+
+        users = sample_log("Audit_Log_Report_06_15_26_07_15_05.csv")
+        plan = template_plan([change("Other changes", kind="User", where="ed046072", what="Status",
+                                     was="Active", becomes="Inactive")])
+        self.assertEqual(validate(plan, users, Options()).changes[0].status, "confirmed")
+
+    def test_an_unrelated_log_is_called_unrelated(self):
+        plan = template_plan([change("Restaurant plan", kind="Restaurant", store="11523",
+                                     what="Time Zone", becomes="x")])
+        res = validate(plan, parse_audit_log(AUDIT_CSV.read_bytes(), "a.csv"), Options())
+        self.assertEqual(res.verdict, FAIL)
+        self.assertTrue(any(f.check_id == "T0" for f in res.failures))
+        self.assertIn("look unrelated", headline(res))
+        self.assertEqual(res.attribution_counts()["unattributed"], 0)
+
+    def test_moved_columns_and_skipped_rows(self):
+        wb = rows_to_xlsx_multi([
+            ("Deployment details", [["Deployment details"], ["Item", "Detail"], ["Environment", "Prod"]]),
+            ("Menu item plan", [
+                ["intro line"],
+                ["Should become *", "Extra column", "What to change *", "Menu item number *"],
+                ["120", "anything", "Display Order", "1"],
+                ["", "", "Display Order", "3"],      # no Should become: kept, reported
+                ["5", "", "", "4"],                  # no What to change: skipped, reported
+            ]),
+        ])
+        plan = parse_plan(wb, "moved.xlsx")
+        self.assertEqual([(c.menu_item, c.becomes) for c in plan.changes], [("1", "120"), ("3", "")])
+        self.assertTrue(any("row 4" in w and "Should become" in w for w in plan.warnings))
+        self.assertTrue(any("row 5" in w and "skipped" in w for w in plan.warnings))
+
+    def test_template_plans_survive_the_json_round_trip(self):
+        from auditmaster.plan_schema import Plan
+        plan = template_plan([change("Other changes", kind="User", where="ed046072", what="Status",
+                                     becomes="Inactive")], do_not_touch=["01 - WWOA"])
+        back = Plan.from_dict(json.loads(json.dumps(plan.to_dict())))
+        self.assertEqual(back.changes, plan.changes)
+        self.assertEqual(back.do_not_touch, ["01 - WWOA"])
+
+    def test_reports_cover_plan_rows(self):
+        log = sample_log("Audit_Log_Report_09_07_26_10_44_32 (1).csv")
+        plan = template_plan([change("Menu item plan", kind="Menu item", menu_item="3023",
+                                     what="Display Order", becomes="7")])
+        res = validate(plan, log, Options())
+        self.assertIn("PLAN ROWS", to_text(res))
+        self.assertEqual(json.loads(to_json(res))["plan_rows"][0]["status"], "wrong_value")
+        self.assertIn("Menu item plan row 3", to_csv(res))
+
+
+class TestKioskButtonGrid(unittest.TestCase):
+    """The daypart grid most kiosk plans use: screen set x daypart -> button."""
+
+    def _plan(self, rows, action=""):
+        details = [["Deployment details"], ["Item", "Detail"]]
+        if action:
+            details.append(["Action", action])
+        return parse_plan(rows_to_xlsx_multi([
+            ("Deployment details", details),
+            ("Kiosk button grid", [
+                ["intro"],
+                ["Screen set *", "Breakfast", "Lunch", "Dinner", "Latenight", "Should become *"],
+            ] + rows),
+        ]), "grid.xlsx")
+
+    def test_each_cell_is_one_button(self):
+        plan = self._plan([["Fairway - Portfolio A", "12", "53", "30", "76", "Disable"]])
+        self.assertEqual(sorted((t.group, t.button, t.expect_state) for t in plan.targets), [
+            ("Breakfast", "12", "Disable"), ("Dinner", "30", "Disable"),
+            ("Latenight", "76", "Disable"), ("Lunch", "53", "Disable"),
+        ])
+        res = validate(plan, parse_audit_log(AUDIT_CSV.read_bytes(), "a.csv"), Options())
+        self.assertEqual((res.verdict, res.total_confirmed), (PASS, 4))
+
+    def test_blank_should_become_uses_the_action(self):
+        plan = self._plan([["07 - DSOA", "11", "", "", "", ""]], action="Disable")
+        self.assertEqual([(t.button, t.expect_state) for t in plan.targets], [("11", "Disable")])
+        with self.assertRaises(PlanParseError):
+            self._plan([["07 - DSOA", "11", "", "", "", ""]], action="Update")
+
+    def test_incomplete_rows_are_reported(self):
+        plan = self._plan([["07 - DSOA", "", "", "", "", "Disable"],
+                           ["08 - EL MAC", "11", "", "", "", "Disable"]])
+        self.assertEqual(len(plan.targets), 1)
+        self.assertTrue(any("row 3" in w and "no button number" in w for w in plan.warnings))
+
+
+class TestTemplateExamplesAreReal(unittest.TestCase):
+    """Every example row in the template is a change the sample logs contain.
+
+    The examples are what the team copies, so each must describe something the
+    system really records, in the words and values it really uses.
+    """
+
+    def test_every_example_is_confirmed_by_the_sample_logs(self):
+        sys.path.insert(0, str(ROOT))
+        from auditmaster.change_check import check_changes
+        from auditmaster.plan_schema import Change
+        from auditmaster.plan_template import GRID_DAYPARTS, KIOSK_GRID, PLAN_TABS
+        from tools.make_plan_template import EXAMPLES
+
+        entries = []
+        for path in sorted(LOGS_DIR.glob("*.csv")):
+            entries += parse_audit_log(path.read_bytes(), path.name).entries
+        entries += parse_audit_log(AUDIT_CSV.read_bytes(), "a.csv").entries
+        if not entries:
+            self.skipTest("no sample logs")
+
+        fields = set(Change.__dataclass_fields__) - {"tab", "row"}
+        for tab in PLAN_TABS:
+            for i, ex in enumerate(EXAMPLES[tab.name]):
+                if tab is KIOSK_GRID:
+                    changes = [Change(tab=tab.name, kind="Kiosk", where=ex["where"], button=ex[d],
+                                      screen=ex.get("screen", ""), what="Button state",
+                                      becomes=ex["becomes"])
+                               for d in GRID_DAYPARTS if ex.get(d)]
+                else:
+                    kw = {k: v for k, v in ex.items() if k in fields}
+                    kw.setdefault("kind", tab.kind)
+                    changes = [Change(tab=tab.name, **kw)]
+                for c in check_changes(changes, entries):
+                    with self.subTest(tab=tab.name, example=i + 1, button=c.change.button):
+                        self.assertEqual(c.status, "confirmed", f"{c.change.label}: got {c.got!r} {c.note}")

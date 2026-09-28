@@ -50,8 +50,9 @@
 
 {# ================= header: verdict + figures, beside what to do next ================= #}
 {% set unexplained = attribution_counts.get('unattributed', 0) %}
-{% if r.plan.targets %}
-  {% set tiles = 2 + (1 if r.total_missing else 0) + (1 if r.not_attempted else 0) + (1 if unexplained else 0) %}
+{% set not_here = r.not_attempted|length + r.changes_not_in_log|length %}
+{% if r.plan.targets or r.changes %}
+  {% set tiles = 2 + (1 if r.total_missing else 0) + (1 if r.total_wrong else 0) + (1 if not_here else 0) + (1 if unexplained else 0) %}
 {% else %}
   {% set tiles = 3 %}
 {% endif %}
@@ -70,18 +71,21 @@
 </div>
 
 {# ================= stats ================= #}
-{% if r.plan.targets %}
+{% if r.plan.targets or r.changes %}
 <div class="stats" style="--cols: {{ tiles if tiles <= 4 else 3 }}">
   <div class="stat ok">
     <div class="n"><span data-n="{{ r.total_confirmed }}">{{ r.total_confirmed }}</span><span class="of"> of {{ r.total_expected }}</span></div>
-    <div class="k">{% if r.not_attempted %}Done, of what this log covers{% else %}Planned changes done{% endif %}</div>
+    <div class="k">{% if not_here %}Done, of what this log covers{% else %}Planned changes done{% endif %}</div>
   </div>
   {% if r.total_missing %}
   <div class="stat bad"><div class="n" data-n="{{ r.total_missing }}">{{ r.total_missing }}</div><div class="k">Still not done</div></div>
   {% endif %}
+  {% if r.total_wrong %}
+  <div class="stat bad"><div class="n" data-n="{{ r.total_wrong }}">{{ r.total_wrong }}</div><div class="k">Done with a different value</div></div>
+  {% endif %}
   <div class="stat {{ 'bad' if r.total_unauthorized }}"><div class="n" data-n="{{ r.total_unauthorized }}">{{ r.total_unauthorized }}</div><div class="k">Changed but not asked for</div></div>
-  {% if r.not_attempted %}
-  <div class="stat"><div class="n" data-n="{{ r.not_attempted|length }}">{{ r.not_attempted|length }}</div><div class="k">Screen sets not in this log</div></div>
+  {% if not_here %}
+  <div class="stat"><div class="n" data-n="{{ not_here }}">{{ not_here }}</div><div class="k">{% if r.changes_not_in_log %}Plan rows{% else %}Screen sets{% endif %} not in this log</div></div>
   {% endif %}
   {# A verdict can fail on rows that are neither missing nor an unplanned
      button, so show that count rather than leaving five zeroes beside a FAIL. #}
@@ -116,6 +120,11 @@
   {% elif r.evidence and r.evidence.claims %}
   <button role="tab" id="tab-detail" data-tab="detail" aria-controls="panel-detail" aria-selected="false">
     Values <span class="badge">{{ r.evidence.matched|length }}</span>
+  </button>
+  {% endif %}
+  {% if r.changes %}
+  <button role="tab" id="tab-changes" data-tab="changes" aria-controls="panel-changes" aria-selected="false">
+    Plan rows <span class="badge">{{ r.changes|length }}</span>
   </button>
   {% endif %}
   <button role="tab" id="tab-rows" data-tab="rows" aria-controls="panel-rows" aria-selected="false">
@@ -345,6 +354,51 @@
 </section>
 {% endif %}
 
+{# ================= PLAN ROWS (template plans) ================= #}
+{% if r.changes %}
+{% set change_cap = 400 %}
+<section class="panel" id="panel-changes" role="tabpanel" aria-labelledby="tab-changes" data-panel="changes" hidden>
+  <div class="card">
+    <h2>Every row of the plan</h2>
+    <p class="sub">
+      Problems first. Click a row to see the audit rows behind it.
+      {% if r.changes|length > change_cap %}Showing {{ change_cap }} of {{ "{:,}".format(r.changes|length) }} — the JSON download has them all.{% endif %}
+    </p>
+    <div class="tablewrap">
+      <table class="fit">
+        <thead>
+          <tr><th>Plan row</th><th class="grow">Where</th><th>What</th><th>Should become</th><th>Result</th><th class="num">Audit rows</th></tr>
+        </thead>
+        <tbody>
+          {% for c in r.changes_for_display[:change_cap] %}
+          {% set rows = c.rows + c.supporting %}
+          <tr class="{{ 'expandable' if rows }}" aria-expanded="false" data-toggle="pr-{{ loop.index0 }}">
+            <td>{{ c.change.tab }} · {{ c.change.row }}</td>
+            <td class="grow">{{ c.change.label }}</td>
+            <td>{{ c.change.field_label }}</td>
+            <td class="mono" title="{{ clip(c.change.becomes, 400) }}">{{ clip(c.change.becomes, 40) or '(any)' }}</td>
+            <td>
+              {% if c.status == 'confirmed' %}<span class="pill ok">✓ done</span>
+              {% elif c.status == 'not_in_log' %}<span class="pill">not in this log</span>
+              {% elif c.status == 'wrong_value' %}<span class="pill bad" title="The log shows {{ clip(c.got, 200) or '(blank)' }}">✕ log shows “{{ clip(c.got, 24) or '(blank)' }}”</span>
+              {% else %}<span class="pill bad">✕ not done</span>{% endif %}
+              {% if c.note %}<div style="font-size:12px;color:var(--faint);margin-top:4px">{{ c.note }}</div>{% endif %}
+            </td>
+            <td class="num">{{ rows|length }}</td>
+          </tr>
+          {% if rows %}
+          <tr class="detail" id="pr-{{ loop.index0 }}" hidden>
+            <td colspan="6"><div class="inner">{{ raw_rows(rows, 12) }}</div></td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{% endif %}
+
 {# ================= AUDIT ROWS ================= #}
 <section class="panel" id="panel-rows" role="tabpanel" aria-labelledby="tab-rows" data-panel="rows" hidden>
   <div class="card">
@@ -480,16 +534,25 @@
         <span style="color:var(--faint)">({{ r.plan.source_format }}{% if r.plan.source_encoding %}, {{ r.plan.source_encoding }}{% endif %})</span>
       </dd>
       <dt>Read as</dt><dd>{{ r.plan.profile_label }}</dd>
+      {% for label, value in r.plan.meta.details.items() %}
+      <dt>{{ label }}</dt><dd>{{ value }}</dd>
+      {% endfor %}
       {% if r.plan.targets %}
       <dt>Plan contents</dt>
       <dd>{{ r.plan.targets|length }} expected change{{ '' if r.plan.targets|length == 1 else 's' }}
           across {{ r.plan.entities|length }} screen set{{ '' if r.plan.entities|length == 1 else 's' }}</dd>
       {% endif %}
+      {% if r.plan.changes %}
+      <dt>Plan rows</dt><dd>{{ r.plan.changes|length }}</dd>
+      {% endif %}
+      {% if r.plan.do_not_touch %}
+      <dt>Do not touch</dt><dd>{% for p in r.plan.do_not_touch %}<span class="tag">{{ p }}</span>{% endfor %}</dd>
+      {% endif %}
       {% if r.plan.claims %}
       <dt>Values harvested</dt><dd>{{ r.plan.claims|length }}</dd>
       {% endif %}
       {% if r.plan.meta.tile_label %}
-      <dt>Subject</dt><dd>“{{ r.plan.meta.tile_label }}” — to be {{ r.plan.meta.action }}d</dd>
+      <dt>Subject</dt><dd>“{{ r.plan.meta.tile_label }}” — to be {{ past_tense(r.plan.meta.action) }}</dd>
       {% endif %}
       {% if r.plan.meta.screen_number %}
       <dt>Target screen</dt><dd>{{ r.plan.meta.screen_number }} {{ r.plan.meta.screen_name }}</dd>
@@ -533,12 +596,12 @@
 
   <div class="card">
     <h2>Download</h2>
-    <p class="sub">The plan template is the plan as this app understood it — correct it and re-upload if a column was read wrongly.</p>
+    <p class="sub">“Plan as read” is the plan exactly as this app understood it — correct it and re-upload if a column was read wrongly.</p>
     <div class="dl">
       <a class="btn" href="{{ url_for('export', token=token, fmt='txt') }}">Report (.txt)</a>
       <a class="btn" href="{{ url_for('export', token=token, fmt='csv') }}">Audit rows (.csv)</a>
       <a class="btn" href="{{ url_for('export', token=token, fmt='json') }}">Full result (.json)</a>
-      <a class="btn" href="{{ url_for('plan_template', token=token) }}">Plan template (.json)</a>
+      <a class="btn" href="{{ url_for('plan_template', token=token) }}">Plan as read (.json)</a>
     </div>
   </div>
 </section>

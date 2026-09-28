@@ -14,6 +14,10 @@ import io
 import json
 
 from .audit_parser import AuditLog
+from .change_check import CONFIRMED as CHANGE_DONE
+from .change_check import MISSING as CHANGE_MISSING
+from .change_check import STATUS_LABEL as CHANGE_LABEL
+from .change_check import WRONG_VALUE
 from .plan_schema import Plan
 from .validator import (
     ATTR_LABEL,
@@ -32,11 +36,14 @@ from .validator import (
 
 def headline(res: Result) -> str:
     """One sentence answering "is the work correct?"."""
-    if not res.plan.targets:
+    if not res.plan.targets and not res.plan.changes:
         return _evidence_headline(res)
 
-    n_sets = len(res.entities)
-    sets_word = "screen set" if n_sets == 1 else "screen sets"
+    if res.changes and not res.changes_checked and not res.plan.targets:
+        return (
+            f"None of the plan's {len(res.changes)} row(s) are in this audit log — "
+            f"the two files look unrelated."
+        )
 
     if res.verdict == PASS:
         return (
@@ -57,6 +64,11 @@ def headline(res: Result) -> str:
             f"{res.total_missing} planned change"
             f"{' is' if res.total_missing == 1 else 's are'} missing"
         )
+    if res.total_wrong:
+        parts.append(
+            f"{res.total_wrong} planned change"
+            f"{' was' if res.total_wrong == 1 else 's were'} made with a different value"
+        )
     if res.total_unauthorized:
         parts.append(
             f"{res.total_unauthorized} change"
@@ -65,7 +77,7 @@ def headline(res: Result) -> str:
         )
     # Anything else that failed is described by the rows it flagged, because
     # "2 other checks failed" tells a reader nothing they can act on.
-    counted = {"C1", "C2", "C3"}
+    counted = {"C1", "C2", "C3", "T2", "T3"}
     other = [f for f in res.failures if f.check_id not in counted]
     if other:
         rows = sorted({r for f in other for r in f.rows})
@@ -82,6 +94,14 @@ def headline(res: Result) -> str:
     if len(parts) == 1:
         return parts[0].capitalize() + "."
     return (", ".join(parts[:-1]) + " and " + parts[-1]).capitalize() + "."
+
+
+def past_tense(action: str) -> str:
+    """ "disable" -> "disabled", "add" -> "added"."""
+    a = (action or "").strip().lower()
+    if not a or a.endswith("ed"):
+        return a
+    return a + ("d" if a.endswith("e") else "ed")
 
 
 def _evidence_headline(res: Result) -> str:
@@ -141,6 +161,32 @@ def next_steps(res: Result) -> list[str]:
             f"so ask whoever did that screen set whether they were intended."
         )
 
+    missing_rows = [c for c in res.changes if c.status == CHANGE_MISSING]
+    if missing_rows:
+        where = "; ".join(f"{c.change.tab} row {c.change.row}" for c in missing_rows[:4])
+        steps.append(
+            f"Do the {len(missing_rows)} plan row(s) that are not in the log yet: {where}"
+            + (f" and {len(missing_rows) - 4} more." if len(missing_rows) > 4 else ".")
+        )
+    wrong_rows = [c for c in res.changes if c.status == WRONG_VALUE]
+    if wrong_rows:
+        steps.append(
+            f"{len(wrong_rows)} plan row(s) were changed to a different value than the plan "
+            f"asks for — see Plan rows, and set them to the planned value."
+        )
+    dnt = [f for f in res.findings if f.check_id == "T7"]
+    if dnt:
+        steps.append(
+            "Something was changed where the plan says not to touch ("
+            + ", ".join(f.entity for f in dnt[:3])
+            + "). Find out who did it and whether it has to be undone."
+        )
+    if res.changes_not_in_log:
+        steps.append(
+            f"{len(res.changes_not_in_log)} plan row(s) are about places this log doesn't "
+            f"cover. Check them against their own audit export."
+        )
+
     outside = [er for er in res.entities if not er.in_plan]
     if outside:
         steps.append(
@@ -172,15 +218,18 @@ def narrative(res: Result) -> list[str]:
     out: list[str] = [headline(res)]
 
     # -- what was compared -------------------------------------------------
+    asked = []
+    if plan.targets:
+        asked.append(f"{len(plan.targets)} button change(s) across {len(plan.entities)} screen set(s)")
+    if plan.changes:
+        asked.append(f"{len(plan.changes)} other planned change(s)")
     scope = (
-        f"Checked {len(plan.targets)} change(s) the plan asks for across "
-        f"{len(plan.entities)} screen set(s), against {len(log.entries):,} row(s) "
-        f"in the audit log."
+        f"Checked {' and '.join(asked)} against {len(log.entries):,} row(s) in the audit log."
     )
     if plan.meta.tile_label:
         scope += (
             f" The plan's subject is the {plan.meta.tile_label!r} tile, to be "
-            f"{plan.meta.action}d"
+            f"{past_tense(plan.meta.action)}"
         )
         if plan.meta.screen_number or plan.meta.screen_name:
             scope += (
@@ -247,6 +296,18 @@ def narrative(res: Result) -> list[str]:
             )
         out.append(detail)
 
+    # -- template rows, one line per tab --------------------------------------
+    by_tab: dict[str, dict[str, int]] = {}
+    for c in res.changes:
+        counts_ = by_tab.setdefault(c.change.tab, {})
+        counts_[c.status] = counts_.get(c.status, 0) + 1
+    for tab, counts_ in by_tab.items():
+        out.append(
+            f"{tab}: "
+            + ", ".join(f"{n} {CHANGE_LABEL[k]}" for k, n in counts_.items())
+            + "."
+        )
+
     # -- whole-log accounting ---------------------------------------------
     counts = res.attribution_counts()
     accounted = " · ".join(
@@ -302,6 +363,7 @@ def to_json(res: Result) -> str:
             "screen_sets_audited": len(res.entities),
             "plan_screen_sets": len(res.plan.entities),
             "not_attempted": len(res.not_attempted),
+            "plan_rows_not_in_log": len(res.changes_not_in_log),
             "failures": len(res.failures),
             "warnings": len(res.warnings),
         },
@@ -316,7 +378,9 @@ def to_json(res: Result) -> str:
             "screen_name": res.plan.meta.screen_name,
             "action": res.plan.meta.action,
             "groups": res.plan.groups,
-            "expected_changes": len(res.plan.targets),
+            "expected_changes": len(res.plan.targets) + len(res.plan.changes),
+            "details": res.plan.meta.details,
+            "do_not_touch": res.plan.do_not_touch,
         },
         "audit_log": {
             "file": res.log.filename,
@@ -370,6 +434,22 @@ def to_json(res: Result) -> str:
             }
             for er in res.entities
         ],
+        "plan_rows": [
+            {
+                "tab": c.change.tab,
+                "row": c.change.row,
+                "where": c.change.label,
+                "what": c.change.field_label,
+                "was": c.change.was,
+                "should_become": c.change.becomes,
+                "status": c.status,
+                "log_value": c.got if c.status == WRONG_VALUE else None,
+                "note": c.note,
+                "audit_rows": [e.row_no for e in c.rows],
+                "supporting_rows": [e.row_no for e in c.supporting],
+            }
+            for c in res.changes
+        ],
         "findings": [
             {
                 "check": f.check_id,
@@ -413,7 +493,7 @@ def to_json(res: Result) -> str:
 _CSV_COLUMNS = [
     "audit_row", "attribution", "screen_set", "in_plan", "daypart", "button",
     "property", "language", "field", "old_setting", "new_setting", "change",
-    "button_status", "user", "timestamp", "transaction_id",
+    "button_status", "user", "timestamp", "transaction_id", "plan_row",
 ]
 
 
@@ -447,6 +527,12 @@ def to_csv(res: Result) -> str:
             status_by[(er.entity, b.button)] = b.status
             daypart_by[(er.entity, b.button)] = b.group
 
+    # Which template row explains each audit row.
+    plan_row: dict[int, str] = {}
+    for c in res.changes:
+        for e in c.rows + c.supporting:
+            plan_row.setdefault(e.row_no, f"{c.change.tab} row {c.change.row}")
+
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
     w.writerow(_CSV_COLUMNS)
@@ -469,6 +555,7 @@ def to_csv(res: Result) -> str:
             e.user,
             e.date_text,
             e.audit_id,
+            plan_row.get(e.row_no, ""),
         ]])
     return buf.getvalue()
 
@@ -523,6 +610,23 @@ def to_text(res: Result) -> str:
                 f"  !! {'(unplanned)':<10} {b.button:<8} {'UNAUTHORIZED':<12} "
                 f"{change:<22} {b.evidence_count} row(s)"
             )
+
+    if res.changes:
+        L += ["", "-" * 74, "PLAN ROWS", "-" * 74]
+        order = {WRONG_VALUE: 0, CHANGE_MISSING: 1, CHANGE_DONE: 2}
+        shown = sorted(res.changes, key=lambda c: order.get(c.status, 3))
+        for c in shown[:300]:
+            mark = "OK " if c.status == CHANGE_DONE else "!! "
+            line = (f"  {mark}{c.change.tab} row {c.change.row}: {c.change.label} · "
+                    f"{c.change.field_label} -> {c.change.becomes or '(any)'}  "
+                    f"[{CHANGE_LABEL[c.status]}]")
+            L += _wrap(line, indent="")
+            if c.status == WRONG_VALUE:
+                L.append(f"       log shows {c.got or '(blank)'!r}")
+            if c.note:
+                L += _wrap(c.note, indent="       ")
+        if len(shown) > 300:
+            L.append(f"  … and {len(shown) - 300} more rows (see the JSON export).")
 
     if res.failures:
         L += ["", "-" * 74, "FAILURES", "-" * 74]

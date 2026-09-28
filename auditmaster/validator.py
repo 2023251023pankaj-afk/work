@@ -18,9 +18,12 @@ No external service or API is involved; every judgement below is local logic.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .audit_parser import CLEARED, DISABLED, ENABLED, AuditEntry, AuditLog
+from .change_check import CONFIRMED as CHANGE_DONE
+from .change_check import MISSING as CHANGE_MISSING
+from .change_check import NOT_IN_LOG, WRONG_VALUE, ChangeResult, check_changes, rows_at
 from .evidence import KIND_LABEL as EV_KIND_LABEL
 from .evidence import EvidenceResult, reconcile
 from .plan_schema import Plan, Target, fold, norm_entity
@@ -72,7 +75,7 @@ ATTR_LABEL = {
 
 #: One line of plain English per bucket, shown as help under the breakdown.
 ATTR_HELP = {
-    ATTR_EXPECTED: "The button the plan told you to change.",
+    ATTR_EXPECTED: "A change the plan asked for.",
     ATTR_SUPPORTING: "The caption and image rows that go with a planned button.",
     ATTR_UNAUTHORIZED: "Changed in the same save as the planned work, but the plan never asked for it. Worth checking.",
     ATTR_OTHER_WORK: "Changed in a save that did none of this plan's work — somebody else's task that happens to be in the same export.",
@@ -221,6 +224,8 @@ class Result:
     attribution: dict[int, str] = field(default_factory=dict)   # row_no -> ATTR_*
     #: Operation-agnostic value matching, present for every plan.
     evidence: EvidenceResult | None = None
+    #: One result per row of a template plan's portfolio tabs.
+    changes: list[ChangeResult] = field(default_factory=list)
 
     # -- rollups ----------------------------------------------------------
     @property
@@ -253,16 +258,38 @@ class Result:
 
     # -- counters ---------------------------------------------------------
     @property
+    def changes_checked(self) -> list[ChangeResult]:
+        """Template rows this log could say something about."""
+        return [c for c in self.changes if c.status != NOT_IN_LOG]
+
+    @property
+    def changes_for_display(self) -> list[ChangeResult]:
+        """Problems first, then done, then rows this log does not cover."""
+        rank = {WRONG_VALUE: 0, CHANGE_MISSING: 1, CHANGE_DONE: 2, NOT_IN_LOG: 3}
+        return sorted(self.changes, key=lambda c: (rank.get(c.status, 9), c.change.tab, c.change.row))
+
+    @property
+    def changes_not_in_log(self) -> list[ChangeResult]:
+        return [c for c in self.changes if c.status == NOT_IN_LOG]
+
+    @property
     def total_expected(self) -> int:
-        return sum(e.expected_count for e in self.entities)
+        return sum(e.expected_count for e in self.entities) + len(self.changes_checked)
 
     @property
     def total_confirmed(self) -> int:
-        return sum(len(e.confirmed) for e in self.entities)
+        return (sum(len(e.confirmed) for e in self.entities)
+                + sum(1 for c in self.changes if c.status == CHANGE_DONE))
 
     @property
     def total_missing(self) -> int:
-        return sum(len(e.missing) for e in self.entities)
+        return (sum(len(e.missing) for e in self.entities)
+                + sum(1 for c in self.changes if c.status == CHANGE_MISSING))
+
+    @property
+    def total_wrong(self) -> int:
+        """Done, but not to the value the plan asked for."""
+        return self.total_expected - self.total_confirmed - self.total_missing
 
     @property
     def total_unauthorized(self) -> int:
@@ -309,21 +336,34 @@ def validate(plan: Plan, log: AuditLog, options: Options | None = None) -> Resul
     if plan.claims:
         res.evidence = reconcile(plan.claims, log)
 
-    if not plan.targets:
+    # Rows of a template plan are checked first: each names exactly the audit
+    # rows it explains, and those rows are then off the table for the checks
+    # below.
+    claimed = _check_changes(res, plan, log, opts) if plan.changes else set()
+
+    if not plan.targets and not plan.changes:
         _validate_by_evidence(res, plan, log)
         _check_provenance(res, log)
         _carry_parse_warnings(res, plan, log)
         return res
 
-    audited_sets = log.screen_sets
-    if not audited_sets:
-        _validate_without_screen_set(res, plan, log, opts)
-    else:
-        for name in audited_sets:
-            res.entities.append(_validate_entity(res, plan, log, name, opts))
+    if plan.targets:
+        rest = replace(log, entries=[e for e in log.entries if e.row_no not in claimed]) if claimed else log
+        # A screen set the plan only names in its other rows is not "outside
+        # the plan"; whatever is left there is judged by the global checks.
+        audited_sets = [
+            s for s in rest.screen_sets
+            if plan.find_entity(s) is not None or not plan.mentions(s)
+        ]
+        if audited_sets:
+            for name in audited_sets:
+                res.entities.append(_validate_entity(res, plan, rest, name, opts))
+        elif not rest.screen_sets and not plan.changes:
+            _validate_without_screen_set(res, plan, rest, opts)
+        _check_not_attempted(res, plan, opts, log.screen_sets)
 
+    _check_do_not_touch(res, plan, log)
     _separate_unrelated_work(res, log)
-    _check_not_attempted(res, plan, opts, audited_sets)
     _check_operation(res, plan, log)
     _check_dates(res, log)
     _check_provenance(res, log)
@@ -829,6 +869,158 @@ def _check_other_properties(res: Result, er: EntityResult, entries: list[AuditEn
                 rows=[e.row_no for e in stray],
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# Template plans: one check per row
+# ---------------------------------------------------------------------------
+
+
+def _change_line(c: ChangeResult) -> str:
+    ch = c.change
+    return f"{ch.tab} row {ch.row} ({ch.label} · {ch.field_label})"
+
+
+def _listed(items: list[str], limit: int = 5) -> str:
+    return "; ".join(items[:limit]) + (f"; and {len(items) - limit} more" if len(items) > limit else "")
+
+
+def _check_changes(res: Result, plan: Plan, log: AuditLog, opts: Options) -> set[int]:
+    """T1–T6 — every row of a template plan's portfolio tabs, checked on its own.
+
+    Returns the audit rows those plan rows account for.
+    """
+    res.changes = check_changes(plan.changes, log.entries)
+    claimed: set[int] = set()
+    for c in res.changes:
+        if c.status not in (CHANGE_DONE, WRONG_VALUE):
+            continue
+        for e in c.rows:
+            res.attribution[e.row_no] = ATTR_EXPECTED
+            claimed.add(e.row_no)
+        for e in c.supporting:
+            if res.attribution.get(e.row_no) != ATTR_EXPECTED:
+                res.attribution[e.row_no] = ATTR_SUPPORTING
+            claimed.add(e.row_no)
+
+    done = [c for c in res.changes if c.status == CHANGE_DONE]
+    wrong = [c for c in res.changes if c.status == WRONG_VALUE]
+    missing = [c for c in res.changes if c.status == CHANGE_MISSING]
+    absent = res.changes_not_in_log
+
+    if not res.changes_checked and not plan.targets:
+        # Nothing the plan names is in this log. Calling every row an
+        # unexplained change would bury the one thing worth saying.
+        for e in log.entries:
+            res.attribution[e.row_no] = ATTR_OTHER_WORK
+        res.findings.append(Finding(
+            check_id="T0", title="Plan and audit log do not correspond", status="fail",
+            severity=CRITICAL,
+            message=(
+                f"None of the plan's {len(res.changes)} row(s) are about anything in this "
+                f"audit log. The two files are most likely for different pieces of work."
+            ),
+        ))
+        return claimed
+
+    if done:
+        res.findings.append(Finding(
+            check_id="T1", title="Planned changes confirmed", status="pass", severity=INFO,
+            message=(
+                f"{len(done)} of the {len(res.changes_checked)} plan row(s) this log covers "
+                f"are in the audit log with the planned value."
+            ),
+            rows=[e.row_no for c in done for e in c.rows][:40],
+        ))
+    if wrong:
+        res.findings.append(Finding(
+            check_id="T2", title="Changed to a different value than planned", status="fail",
+            severity=CRITICAL,
+            message="The change was made, but the value is not what the plan asks for: " + _listed([
+                f"{_change_line(c)} — plan says {c.change.becomes!r}, log shows {c.got or '(blank)'!r}"
+                for c in wrong
+            ]) + ".",
+            rows=[e.row_no for c in wrong for e in c.rows][:40],
+        ))
+    if missing:
+        res.findings.append(Finding(
+            check_id="T3", title="Planned change not done", status="fail", severity=CRITICAL,
+            message=(
+                "The log has other changes at these places, but not this one: "
+                + _listed([_change_line(c) + (f" — {c.note}" if c.note else "") for c in missing])
+                + "."
+            ),
+            rows=[e.row_no for c in missing for e in c.rows][:40],
+        ))
+    if absent:
+        places = list(dict.fromkeys(c.change.label for c in absent))
+        res.findings.append(Finding(
+            check_id="T4",
+            title="Plan rows this log does not cover",
+            status="fail" if opts.require_full_plan_coverage else "info",
+            severity=CRITICAL if opts.require_full_plan_coverage else INFO,
+            message=(
+                f"{len(absent)} plan row(s) are about places with no rows in this audit "
+                f"log, so they are neither confirmed nor contradicted here: "
+                + _listed(places, 8) + ". Check them against their own audit export."
+            ),
+        ))
+    started = [c for c in done if c.started_elsewhere]
+    if started:
+        res.findings.append(Finding(
+            check_id="T5", title="Started from a different value", status="warn", severity=MINOR,
+            message=(
+                "These ended on the planned value, but the value before the change was "
+                "not the one the plan's Was column gives: "
+                + _listed([f"{_change_line(c)} — {c.note}" for c in started]) + "."
+            ),
+            rows=[e.row_no for c in started for e in c.rows][:40],
+        ))
+    dated = [c for c in done if c.date_differs]
+    if dated:
+        res.findings.append(Finding(
+            check_id="T6", title="Different effective date", status="warn", severity=MINOR,
+            message="Effective From in the log is not the date the plan gives: "
+            + _listed([f"{_change_line(c)} — {c.note}" for c in dated]) + ".",
+            rows=[e.row_no for c in dated for e in c.rows][:40],
+        ))
+    return claimed
+
+
+def _check_do_not_touch(res: Result, plan: Plan, log: AuditLog) -> None:
+    """T7 — nothing was changed where the plan says not to touch.
+
+    A change there in the same save as the planned work is a defect. One made
+    in a different save may be someone else's task, so it is a warning.
+    """
+    if not plan.do_not_touch:
+        return
+    planned_tx = {
+        e.audit_id for e in log.entries
+        if e.audit_id and res.attribution.get(e.row_no) in (ATTR_EXPECTED, ATTR_SUPPORTING)
+    }
+    for place in plan.do_not_touch:
+        rows = rows_at(place, log.entries)
+        if not rows:
+            continue
+        same_save = [e for e in rows if not planned_tx or e.audit_id in planned_tx]
+        for e in same_save:
+            res.attribution[e.row_no] = ATTR_UNAUTHORIZED
+        res.findings.append(Finding(
+            check_id="T7",
+            title="Changed where the plan says not to touch",
+            status="fail" if same_save else "warn",
+            severity=CRITICAL if same_save else MAJOR,
+            entity=place,
+            message=(
+                f"The plan marks {place!r} as “do not touch”, but {len(rows)} audit row(s) "
+                f"changed it"
+                + ("." if same_save else
+                   ", all in saves that did none of this plan's work — probably a different "
+                   "task, but worth confirming.")
+            ),
+            rows=[e.row_no for e in rows][:40],
+        ))
 
 
 # ---------------------------------------------------------------------------

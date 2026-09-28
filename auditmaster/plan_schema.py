@@ -39,6 +39,49 @@ class Target:
 
 
 @dataclass
+class Change:
+    """One row of a plan written on the Audit Master template.
+
+    A :class:`Target` can only say "this button ends up enabled or disabled".
+    A change says the general thing — *this field* of *this thing* should end
+    up reading *this value* — which covers captions, display orders, a store's
+    time zone or a user's status alike.
+    """
+
+    tab: str                         # the template tab it came from: "Menu item plan"
+    row: int = 0                     # 1-based row on that tab, for the reader
+    kind: str = ""                   # channel / type: "Price", "User", "Package schedule"
+    where: str = ""                  # screen set, menu item set, user ID, file name
+    store: str = ""                  # restaurant number, for store-level work
+    screen: str = ""                 # screen name
+    screen_number: str = ""
+    group: str = ""                  # daypart
+    button: str = ""
+    menu_item: str = ""
+    name: str = ""                   # menu item or store name, for display only
+    what: str = ""                   # the field, as the audit log names it
+    language: str = ""               # blank or "All" means every language
+    was: str = ""
+    becomes: str = ""
+    effective: str = ""
+    notes: str = ""
+
+    @property
+    def label(self) -> str:
+        """Where this change is, in the words a reader would use."""
+        bits = [b for b in (self.where, f"store {self.store}" if self.store else "",
+                            self.screen, f"button {self.button}" if self.button else "",
+                            f"menu item {self.menu_item}" if self.menu_item else "",
+                            self.name) if b]
+        return " · ".join(bits) or self.kind or "(everywhere)"
+
+    @property
+    def field_label(self) -> str:
+        lang = self.language if self.language and self.language.lower() != "all" else ""
+        return f"{self.what} ({lang})" if lang else self.what
+
+
+@dataclass
 class Assignment:
     """Who was asked to do / check one entity."""
 
@@ -57,10 +100,14 @@ class PlanMeta:
     screen_name: str = ""            # "Left hand navigation"
     tile_label: str = ""             # "NEW McCafé Specialty Drinks"
     action: str = "disable"          # disable | enable
+    environment: str = ""            # Prod | Pre-Prod, when the plan states it
     operation: str = ""              # expected audit "Operation", e.g. Manage Screen Set
     group_workflows: dict[str, str] = field(default_factory=dict)
     instructions: list[str] = field(default_factory=list)
     validation_rules: list[str] = field(default_factory=list)
+    #: Everything the plan states about the deployment as a whole (ticket,
+    #: owner, dates, rollback…), label -> value, in the plan's own order.
+    details: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -78,13 +125,17 @@ class Plan:
     sheet_roles: dict[str, str] = field(default_factory=dict)
     meta: PlanMeta = field(default_factory=PlanMeta)
     targets: list[Target] = field(default_factory=list)
+    #: Row-level expectations from the plan template (see plan_template.py).
+    changes: list[Change] = field(default_factory=list)
+    #: Places the plan says must not be touched at all.
+    do_not_touch: list[str] = field(default_factory=list)
     assignments: list[Assignment] = field(default_factory=list)
     groups: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     #: Values harvested from the plan for operation-agnostic matching. Held as
     #: a plain list (of :class:`auditmaster.evidence.Claim`) to avoid an import
-    #: cycle, and excluded from the NDP export.
+    #: cycle.
     claims: list = field(default_factory=list)
 
     # -- views ------------------------------------------------------------
@@ -126,11 +177,20 @@ class Plan:
             return e
         return None
 
+    def mentions(self, name: str) -> bool:
+        """True if a template change row names this place."""
+        want = norm_entity(name)
+        return bool(want) and any(norm_entity(c.where) == want for c in self.changes)
+
     # -- serialization ----------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
-        # Claims are derived evidence, not part of the plan template.
-        d.pop("claims", None)
+        # Only what the plan asks for; a claim's match results belong to a
+        # validation, not to the plan.
+        d["claims"] = [
+            {"value": c.value, "kind": c.kind, "label": c.label, "source": c.source}
+            for c in self.claims
+        ]
         return d
 
     @classmethod
@@ -148,6 +208,7 @@ class Plan:
             sheet_roles=dict(d.get("sheet_roles") or {}),
             meta=PlanMeta(**{k: v for k, v in meta_d.items() if k in PlanMeta.__dataclass_fields__}),
             groups=list(d.get("groups") or []),
+            do_not_touch=list(d.get("do_not_touch") or []),
             warnings=list(d.get("warnings") or []),
             notes=list(d.get("notes") or []),
         )
@@ -155,6 +216,17 @@ class Plan:
             plan.targets.append(
                 Target(**{k: v for k, v in t.items() if k in Target.__dataclass_fields__})
             )
+        for c in d.get("changes") or []:
+            plan.changes.append(
+                Change(**{k: v for k, v in c.items() if k in Change.__dataclass_fields__})
+            )
+        if d.get("claims"):
+            from .evidence import Claim   # evidence imports this module
+            for c in d["claims"]:
+                if isinstance(c, dict) and c.get("value") and c.get("kind"):
+                    plan.claims.append(Claim(value=str(c["value"]), kind=str(c["kind"]),
+                                             label=str(c.get("label", "")),
+                                             source=str(c.get("source", ""))))
         for a in d.get("assignments") or []:
             plan.assignments.append(
                 Assignment(**{k: v for k, v in a.items() if k in Assignment.__dataclass_fields__})

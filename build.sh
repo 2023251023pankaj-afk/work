@@ -18,6 +18,7 @@ echo "Building…"
   --name AuditMaster \
   --add-data "templates:templates" \
   --add-data "static:static" \
+  --add-data "DEPLOYMENT-PLAN-TEMPLATE.xlsx:." \
   --hidden-import auditmaster \
   --collect-submodules auditmaster \
   launch.py

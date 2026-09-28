@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import re
 
+from . import plan_template
 from .evidence import extract_claims
 from .plan_schema import Assignment, Plan, PlanMeta, Target, norm_label
 from .profiles import (
@@ -89,8 +90,15 @@ def parse_plan(raw: bytes, filename: str) -> Plan:
     except PlanParseError as exc:
         plan = _evidence_only_plan(wb, str(exc))
 
-    plan.claims = extract_claims(wb)
-    if not plan.targets and not plan.claims:
+    if plan.profile != plan_template.PROFILE:
+        plan.claims = extract_claims(wb)
+    elif not (plan.targets or plan.changes):
+        raise PlanParseError(
+            "This plan template has no changes filled in yet. Add at least one row "
+            "to the Kiosk button grid, Kiosk, POS, Menu item, McValue, Restaurant or "
+            "Other changes tab."
+        )
+    if not plan.targets and not plan.changes and not plan.claims:
         raise PlanParseError(
             "Nothing checkable was found in this plan. No screen-set/button "
             "table was located, and no captions, image names, menu-item numbers "
@@ -152,6 +160,11 @@ def build_plan(wb: Workbook) -> Plan:
         sheet_names=[s.name for s in wb.sheets],
         notes=list(wb.notes),
     )
+
+    # A plan written on our own template is read column by column, no guessing.
+    if plan_template.looks_like_template(wb):
+        plan_template.read_template(wb, plan)
+        return plan
 
     roles = _assign_roles(wb)
     plan.sheet_roles = {name: role for name, role in roles.items()}

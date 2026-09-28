@@ -49,8 +49,10 @@ launch.py               the entry point both of the above use
 app.py                  web routes
 auditmaster/            the engine — parsing, validation, reporting
 templates/  static/     the interface
-tests/                  137 tests
+tests/                  the test suite (developer copy only, not in the team zip)
 samples/                real plans and audit logs to try it with
+DEPLOYMENT-PLAN-TEMPLATE.xlsx   the plan template the team fills in
+tools/                  rebuilds that template (developer copy only, not in the team zip)
 ```
 
 `run.sh` / `run.bat` start the app with the debugger **off**. Werkzeug's
@@ -62,6 +64,38 @@ Nothing else is needed. `.venv/` appears on first run and is disposable —
 delete it before sharing the folder and `run.bat` will rebuild it.
 
 ---
+
+## Writing a new plan
+
+Every plan is written on **`DEPLOYMENT-PLAN-TEMPLATE.xlsx`** — in this folder, and
+also on the app's home page under “Download the plan template”. One workbook
+covers every kind of deployment; it was built from the team's existing plans,
+and its dropdowns list the fields those deployments change in the audit logs.
+
+| Tab | What goes there |
+|---|---|
+| Start here | How to fill it in, which tab to use, and a checklist before sending |
+| Deployment details | Name, ticket, portfolio, environment, level, action, owner, dates, rollback, sign-off — each marked Required or Optional |
+| Scope & assignment | Every screen set, store or item, its assignee and validator. Mark any as “No - do not touch” and the app flags changes there |
+| Steps | Pre-work, deployment, validation and rollback steps |
+| Kiosk button grid | The usual clean-up: one row per screen set, a button number under Breakfast / Lunch / Dinner / Latenight |
+| Kiosk plan | Any other kiosk change, one row per button: menu item, caption, image, On click |
+| POS plan | One row per POS button: taking items off or putting them on |
+| Menu item plan | Display order, names, sell locations, images, removeFromMOT, choice components, menu item sets |
+| McValue plan | Kiosk buttons, menu items and price lists for a McValue launch, with a Channel per row |
+| Restaurant plan | One store's settings: kiosk hours, features, time zone, an item's status there |
+| Other changes | Users, package schedules, media files |
+| Examples | Filled-in rows for every tab — each a real change from the sample logs (never read by the app) |
+
+**The flow:** hand the team the template → they fill in one copy per deployment
+(only the tabs it needs) → upload the filled copy with the audit log → every row
+comes back as done, done with a different value, not done, or not in this log.
+
+Required columns have orange headings; clicking a cell shows a hint. Keep the
+column headings as they are — they are how the app finds your data.
+
+To rebuild the template after changing its columns in
+`auditmaster/plan_template.py`: `python tools/make_plan_template.py`.
 
 ## Two modes
 
